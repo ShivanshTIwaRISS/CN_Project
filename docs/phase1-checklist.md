@@ -11,7 +11,7 @@
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 1 | LAN IP inventory (Mac 1, Mac 2) | ✅ VERIFIED | `ifconfig en0` on both Macs |
-| 2 | Ping between Mac 1 and Mac 2 | ⬜ PENDING | capture screenshot/output |
+| 2 | Ping between Mac 1 and Mac 2 | ✅ VERIFIED | 4 packets sent/rcvd, 0.0% loss, avg 29.6ms |
 
 ---
 
@@ -80,9 +80,9 @@
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 21 | DNS query/response capture | ⬜ PENDING | save `.pcapng` to `evidence/wireshark/` |
-| 22 | TCP 3-way handshake capture | ⬜ PENDING | save `.pcapng` to `evidence/wireshark/` |
-| 23 | TLS ClientHello / ServerHello capture | ⬜ PENDING | save `.pcapng` to `evidence/wireshark/` |
-| 24 | Encrypted HTTP data capture | ⬜ PENDING | save `.pcapng` to `evidence/wireshark/` |
+| 22 | TCP 3-way handshake capture | ✅ VERIFIED | captured in `wireshark_Wi-FiL0A0v3.pcapng` (`tcp.port == 8443`) |
+| 23 | TLS ClientHello / ServerHello capture | ✅ VERIFIED | captured with `SNI=app.teamx.test` and ServerHello |
+| 24 | Encrypted HTTP data capture | ✅ VERIFIED | Application Data frames captured and analyzed |
 
 > Note: `.pcapng` files are listed in `.gitignore` (binary, large).
 > Upload captures as GitHub release assets or store externally.
@@ -93,7 +93,7 @@
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 25 | Curl fails with wrong domain / no DNS | ⬜ PENDING | save output to `evidence/failures/` |
+| 25 | Curl fails with wrong domain / no DNS | ✅ VERIFIED | NXDOMAIN on 8.8.8.8; curl (6) host resolve error when DNS unset |
 | 26 | Curl fails when CA not trusted (before Keychain trust) | ⬜ PENDING | save output to `evidence/failures/` |
 | 27 | Backend A or B stopped → nginx returns error or reduced LB | ⬜ PENDING | save output to `evidence/failures/` |
 

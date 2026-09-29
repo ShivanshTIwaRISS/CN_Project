@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# nginx/phase1.conf.example
+# Template — fill in your own values before use.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Replace all <PLACEHOLDER> values with your actual machine details.
+#
+# <MAC1_IP>   — LAN IP of Mac 1 (runs dnsmasq + Backend A)
+# <MAC2_IP>   — LAN IP of Mac 2 (runs nginx + Backend B)
+# <USERNAME>  — your macOS login name
+# <PROJECT>   — path under your home directory where the project lives
+# ─────────────────────────────────────────────────────────────────────────────
+
+upstream backends {
+    server <MAC1_IP>:3001;   # Backend A
+    server <MAC2_IP>:3002;   # Backend B
+}
+
+server {
+    listen 8443 ssl;
+    server_name app.teamX.test;
+
+    ssl_certificate     /Users/<USERNAME>/<PROJECT>/nginx/ssl/app.crt;
+    ssl_certificate_key /Users/<USERNAME>/<PROJECT>/nginx/ssl/app.key;
+
+    location / {
+        proxy_pass http://backends;
+
+        proxy_set_header Host             $host;
+        proxy_set_header X-Real-IP        $remote_addr;
+        proxy_set_header X-Forwarded-For  $proxy_add_x_forwarded_for;
+    }
+}

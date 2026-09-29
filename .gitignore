@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .gitignore — Phase 1 Private Network Service Platform
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── TLS / Certificate private material ───────────────────────────────────────
+# NEVER commit private keys, CSRs, or serial files.
+*.key
+*.csr
+*.srl
+*.pem
+
+# Self-signed / CA bundles living inside the repo tree
+ssl/
+secrets/
+
+# ── Environment / credential files ───────────────────────────────────────────
+.env
+.env.*
+
+# ── Packet captures ──────────────────────────────────────────────────────────
+*.pcap
+*.pcapng
+*.cap
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── Node / npm (not used, kept for safety) ───────────────────────────────────
+node_modules/
+npm-debug.log*
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Backups / temp ───────────────────────────────────────────────────────────
+backup/
+*.bak
+*.tmp
+*~
+*.swp
+*.swo
+
+# ── Editor ───────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DO NOT ignore source code, README, nginx conf, or docs.
+# ─────────────────────────────────────────────────────────────────────────────

@@ -1,25 +1,27 @@
 
 # Private Network Service Platform
 
-**Computer Networks Course Project · Phase 1 — Build & Observe · Phase 2 — Harden & Recover**
+**Computer Networks Course Project · Phase 1: Build and Observe · Phase 2: Harden and Recover**
 
-A two-Mac, fully local networking environment that demonstrates private DNS, HTTPS termination, reverse proxying, round-robin load balancing, HTTP cache validation, DNS resilience, backend isolation, failover, and packet-level troubleshooting.
+A locally hosted networking project that demonstrates private DNS, HTTPS/TLS termination, reverse proxying, round-robin load balancing, HTTP cache validation, DNS resilience, backend isolation, failover, and packet-level troubleshooting using two macOS laptops.
 
-> **Core idea:** The application is intentionally small. The main focus of this project is the network path and the behavior of its protocols and services.
+> **Project principle:** The application is deliberately simple; the network services and the path taken by each request are the focus.
+
+---
 
 ## Contents
 
 - [Project overview](#project-overview)
-- [Architecture](#architecture)
-- [Machines and services](#machines-and-services)
-- [Request flow](#request-flow)
+- [Team and machine roles](#team-and-machine-roles)
+- [Network topology](#network-topology)
+- [Addressing and service ports](#addressing-and-service-ports)
 - [Technology stack](#technology-stack)
 - [Repository layout](#repository-layout)
 - [Prerequisites](#prerequisites)
 - [Configuration and setup](#configuration-and-setup)
 - [API endpoints](#api-endpoints)
-- [Phase 1 verification](#phase-1-verification)
-- [Phase 2 extensions and results](#phase-2-extensions-and-results)
+- [Phase 1 results](#phase-1-results)
+- [Phase 2 results](#phase-2-results)
 - [Wireshark evidence](#wireshark-evidence)
 - [Troubleshooting](#troubleshooting)
 - [Security and cleanup](#security-and-cleanup)
@@ -29,106 +31,135 @@ A two-Mac, fully local networking environment that demonstrates private DNS, HTT
 
 ## Project overview
 
-The platform uses two macOS laptops to host four logical network roles. Mac 1 runs the primary DNS resolver and Backend A. Mac 2 runs the backup DNS resolver, the active nginx HTTPS edge, and Backend B. A second nginx listener on Mac 1 is used as the target for the controlled DNS edge-migration test.
+The project builds a private service environment on a shared Wi-Fi/LAN. A client resolves a private `.test` hostname through one of the team's DNS resolvers, opens an HTTPS connection to the edge nginx server, and receives a response from one of two HTTP backends.
 
 The private DNS namespace is `team1.test`:
 
 - `app.team1.test` — application entry point
 - `api.team1.test` — API entry point
 
-The normal HTTPS entry point is `https://app.team1.test:8443` (or `https://api.team1.test:8443`). The edge terminates TLS and forwards requests to one of the two HTTP backends.
+The normal service entry point is `https://app.team1.test:8443` (or `https://api.team1.test:8443`). Nginx on Mac 2 terminates TLS and forwards requests to Backend A or Backend B.
 
-The environment is local to the team's private LAN. It does not require cloud hosting or external managed DNS/load-balancing services.
+The deployment is local. It does not depend on cloud hosting or a managed cloud DNS/load-balancing service.
 
-## Architecture
+### Main capabilities
 
-```text
-                         Private Wi-Fi / LAN
-                    10.7.0.0/19 · gateway 10.7.0.1
+- Primary and backup private DNS using `dnsmasq`.
+- TLS termination and reverse proxying using nginx.
+- Two identifiable HTTP/JSON backend instances.
+- Round-robin upstream selection, visible through `X-Backend`.
+- HTTP caching and conditional validation using `Cache-Control` and `ETag`.
+- DNS backup-answer testing and a controlled 30-second TTL/cache experiment.
+- Backend-port restrictions using macOS PF rules.
+- Backend outage/recovery testing and DNS-based edge cutover.
+- Protocol inspection using Wireshark.
 
-       Mac 1 — Shivansh Tiwari              Mac 2 — Navprabhat Singh
-          10.7.19.246                           10.7.18.254
-          Wi-Fi: en0                            Wi-Fi: en0
+---
 
-   +--------------------------+          +--------------------------+
-   | Primary DNS              |          | Backup DNS               |
-   | dnsmasq :53              |          | dnsmasq :53              |
-   +------------+-------------+          +-------------+------------+
-                |                                      |
-                +----------- DNS lookup --------------+
-                               |
-                               v
-                    app.team1.test / api.team1.test
-                               |
-                               v
-                      HTTPS edge on Mac 2
-                       nginx :8443 (TLS)
-                               |
-                    reverse proxy / round robin
-                         /             \
-                        /               \
-                       v                 v
-             Backend A                 Backend B
-          Mac 1 :3001/HTTP        Mac 2 127.0.0.1:3002/HTTP
-```
+## Team and machine roles
 
-The DNS lookup and the HTTPS request are separate operations: DNS returns the address for the selected edge; the client then establishes TCP and TLS to that address. Nginx selects the backend, so the client does not need to know either backend address.
+The course reference architecture describes four principal roles: DNS, edge/reverse proxy, Backend A, and Backend B. Because the team used two physical laptops, those roles were combined as follows.
 
-## Machines and services
+| Machine | Team member | IPv4 address observed during testing | Main services |
+|---|---|---:|---|
+| Mac 1 | Shivansh Tiwari | `10.7.19.246` | Primary DNS, Backend A, existing nginx listener used as the standby/cutover edge, PF policy, test client |
+| Mac 2 | Navprabhat Singh | `10.7.18.254` | Backup DNS, active nginx HTTPS edge/load balancer, Backend B, PF policy, test client |
 
-| Machine | Team member | Observed IPv4 | Interface | Logical roles |
-|---|---|---:|---|---|
-| Mac 1 | Shivansh Tiwari | `10.7.19.246` | `en0` | Primary DNS, Backend A, standby/cutover nginx listener, test client |
-| Mac 2 | Navprabhat Singh | `10.7.18.254` | `en0` | Backup DNS, active nginx edge/load balancer, Backend B, test client |
+Both Macs were observed on Wi-Fi interface `en0`, with subnet mask `255.255.224.0` (`/19`) and default gateway `10.7.0.1`. The corresponding subnet is `10.7.0.0/19`.
 
-Both machines were observed with subnet mask `255.255.224.0` (`/19`) and default gateway `10.7.0.1`. The addresses are DHCP-assigned and may change. Re-check them before running the configuration or test commands:
+**Addressing note:** These IPv4 addresses were assigned through DHCP during the recorded tests. Check the current addresses before using the example configurations. If either address changes, update DNS records, nginx upstreams, PF peer rules, and client resolver settings.
+
+Check the current network details on either Mac:
 
 ```bash
 networksetup -getinfo "Wi-Fi"
 ipconfig getifaddr en0
+route -n get default | grep gateway
 ```
 
-### Service and port map
+---
 
-| Port | Protocol | Host | Service | Purpose |
+## Network topology
+
+```mermaid
+flowchart TB
+    C["Test client\nMac 1 or Mac 2"]
+    D1["Primary DNS · Mac 1\n10.7.19.246:53\ndnsmasq"]
+    D2["Backup DNS · Mac 2\n10.7.18.254:53\ndnsmasq"]
+    E["Active HTTPS edge · Mac 2\n10.7.18.254:8443\nnginx · TLS termination"]
+    A["Backend A · Mac 1\n10.7.19.246:3001\nHTTP / Node.js"]
+    B["Backend B · Mac 2\n127.0.0.1:3002\nHTTP / Node.js"]
+    S["Existing standby/cutover nginx listener · Mac 1\n10.7.19.246:8443"]
+
+    C -->|DNS query / answer · UDP or TCP 53| D1
+    C -->|DNS query / answer · UDP or TCP 53| D2
+    C -->|HTTPS · TCP 8443| E
+    E -->|HTTP upstream · TCP 3001 over LAN| A
+    E -->|HTTP upstream · loopback TCP 3002| B
+    C -.->|DNS cutover test| S
+```
+
+The DNS lookup and HTTPS request are separate stages. DNS returns the selected edge address; the client then establishes TCP and TLS to that address. Nginx selects the backend, so the client does not need to know the backend addresses.
+
+Mac 1's port-8443 listener was already running during the controlled edge-migration test. Its presence was confirmed and it successfully returned a Backend A response after the application A record was changed to Mac 1. The old-cache/new-edge overlap was not separately captured.
+
+---
+
+## Addressing and service ports
+
+| Port | Transport | Host | Service | Purpose / scope |
 |---:|---|---|---|---|
-| 53 | UDP/TCP | Mac 1 | Primary `dnsmasq` | Primary private DNS resolver |
-| 53 | UDP/TCP | Mac 2 | Backup `dnsmasq` | Backup private DNS resolver |
-| 8443 | TCP/TLS | Mac 2 | Active nginx | HTTPS edge, TLS termination, reverse proxy, load balancing |
-| 8443 | TCP/TLS | Mac 1 | Existing standby/cutover nginx listener | Controlled DNS-based edge migration target |
-| 3001 | TCP/HTTP | Mac 1 | Backend A | Remote upstream reached by nginx over the LAN |
-| 3002 | TCP/HTTP | Mac 2 | Backend B | Local upstream reached by nginx over loopback (`127.0.0.1`) |
-| 5300 | UDP/TCP | Local test host | Temporary caching resolver | Isolated DNS TTL/cache experiment |
+| `53` | UDP/TCP | Mac 1 (`10.7.19.246`) | Primary `dnsmasq` | Primary private DNS resolver |
+| `53` | UDP/TCP | Mac 2 (`10.7.18.254`) | Backup `dnsmasq` | Backup private DNS resolver |
+| `8443` | TCP/TLS | Mac 2 (`10.7.18.254`) | Active nginx | Client-facing HTTPS edge and load balancer |
+| `8443` | TCP/TLS | Mac 1 (`10.7.19.246`) | Existing nginx listener | Target used in controlled DNS edge-migration test |
+| `3001` | TCP/HTTP | Mac 1 (`10.7.19.246`) | Backend A | Remote HTTP upstream reached over the LAN |
+| `3002` | TCP/HTTP | Mac 2 (`127.0.0.1`) | Backend B | Nginx reaches this backend through loopback; PF restricts inbound Wi-Fi access |
+| `5300` | UDP/TCP | Mac 1 (`127.0.0.1`) | Temporary caching resolver | Isolated TTL/cache experiment; forwards to primary DNS |
 
-**Address note:** The values above are the addresses observed during the project tests, not static assignments. If DHCP changes either address, update both DNS configurations, the nginx upstream configuration, client resolver settings, and any PF rules that refer to the peer address.
+**Backend B binding detail:** The Node.js process was configured to listen on `0.0.0.0:3002`, not exclusively on loopback. Nginx uses `127.0.0.1:3002` to reach it locally, while the Mac 2 PF rule blocks inbound Wi-Fi connections to port `3002`. Do not describe the process itself as loopback-bound.
 
-## Request flow
+### DNS operational states
 
-1. The client queries a configured DNS resolver for `app.team1.test` or `api.team1.test`.
-2. The resolver returns the A record for the selected HTTPS edge.
-3. The client opens TCP to the edge on port `8443` (SYN, SYN-ACK, ACK).
-4. TLS negotiation occurs; the client sends the HTTP request inside the encrypted TLS connection.
-5. Nginx selects Backend A (`10.7.19.246:3001`) or Backend B (`127.0.0.1:3002`).
-6. The backend returns JSON and an `X-Backend` response header. Nginx sends the response to the client over HTTPS.
+**Normal baseline**
+
+```text
+app.team1.test  -> 10.7.18.254  (Mac 2 active nginx edge)
+api.team1.test  -> 10.7.18.254  (Mac 2 active nginx edge)
+```
+
+**Controlled edge-migration test**
+
+```text
+app.team1.test  -> 10.7.19.246  (Mac 1 existing nginx listener)
+```
+
+The application record was deliberately changed during migration testing. Restore both DNS configurations to the selected active edge before the final demonstration.
+
+---
 
 ## Technology stack
 
-| Component | Role |
+| Technology | Use in this project |
 |---|---|
-| macOS / Wi-Fi (`en0`) | Two-host private LAN environment |
+| macOS and Wi-Fi (`en0`) | Two-host private LAN environment |
 | Homebrew | Package installation |
-| Node.js | Backend HTTP/REST service runtime used in the recorded Phase 2 tests |
+| `dnsmasq` | Primary/backup DNS records and local TTL behavior |
+| nginx | TLS termination, reverse proxy, round-robin upstream selection |
+| Node.js | Phase 2 backend implementation used in recorded tests |
 | Python | Phase 1 backend implementation retained in the project |
-| `dnsmasq` | Primary DNS, backup DNS, local records and TTL behavior |
-| nginx | TLS termination, reverse proxy and round-robin upstream selection |
 | `mkcert` | Local development certificate and local CA |
-| macOS PF (`pfctl`) | Backend-port access restrictions |
-| `curl`, `dig`, `ping`, `nc`, `lsof`, `openssl` | Service checks and troubleshooting |
-| Wireshark | DNS, TCP, TLS, HTTP and reset-packet inspection |
+| macOS PF (`pfctl`) | Restrictions on inbound backend-port traffic |
+| `curl`, `dig`, `ping`, `nc`, `lsof`, `openssl` | Service testing and troubleshooting |
+| Wireshark | DNS, TCP, TLS, HTTP and connection-event inspection |
+
+The recorded Mac 2 environment reported Node.js `v26.13.1`, npm `11.20.0`, dnsmasq `2.93`, nginx `1.31.9`, and mkcert `1.4.4`. These are versions observed during the project session and may differ on another installation.
+
+---
 
 ## Repository layout
 
-The project is organised by service, configuration, scripts, documentation and evidence. The following is the intended layout described by the project files; if a local checkout has been reorganised, use the actual paths shown by `ls` before running a command.
+The project materials are organised by backend implementation, service configuration, scripts, documentation, TLS guidance, and evidence. The following tree reflects the layout documented for this project; check the current GitHub file tree if files have since been renamed or moved.
 
 ```text
 .
@@ -189,6 +220,15 @@ The project is organised by service, configuration, scripts, documentation and e
 └── .gitignore
 ```
 
+- `backend-a/` and `backend-b/` contain the Phase 1 Python backend implementations.
+- `node-backend/` contains the parameterised Node.js backend used in the recorded Phase 2 tests.
+- `dns/`, `nginx/`, and `firewall/` contain example service configurations.
+- `scripts/` contains launch, verification, demonstration, and restoration scripts.
+- `docs/` contains architecture, checklists, implementation notes, test results, and the demo runbook.
+- `evidence/` is intended for test transcripts and packet-analysis evidence.
+
+---
+
 ## Prerequisites
 
 On both Macs:
@@ -196,17 +236,17 @@ On both Macs:
 - macOS with administrator access for service installation and PF configuration;
 - Homebrew;
 - Node.js and npm for the Node.js backend;
-- `dnsmasq`, nginx and `mkcert`;
-- both Macs connected to the same private Wi-Fi/LAN;
-- permission to capture packets on the Wi-Fi interface using Wireshark.
+- `dnsmasq`, nginx, and `mkcert`;
+- both laptops connected to the same private Wi-Fi/LAN;
+- Wireshark for packet capture.
 
-Install the tools with Homebrew:
+Install the main packages:
 
 ```bash
 brew install node dnsmasq nginx mkcert
 ```
 
-Check the installed commands:
+Check the tools:
 
 ```bash
 node --version
@@ -217,125 +257,189 @@ nginx -v 2>&1
 mkcert -version
 ```
 
+Run the commands from the repository root unless a section says otherwise. Review the `.example` configuration files and adjust IP addresses and paths before installing them.
+
+---
+
 ## Configuration and setup
 
-> **Important:** The commands below show the two-machine deployment model. Review each `.example` configuration before installing it. In particular, confirm the current IP addresses, DNS A records, nginx certificate paths and PF peer address. Do not overwrite the host's existing network or PF configuration without keeping a rollback copy.
+> **Important:** The IP addresses in this README are the values observed during testing. They may change because of DHCP. Do not blindly overwrite existing DNS, nginx, or PF configuration. Save the current configuration first and confirm which processes already own ports `53`, `8443`, `3001`, and `3002`.
 
-### 1. Verify LAN connectivity
+### 1. Verify the LAN
 
-Run on Mac 1:
+From Mac 1:
 
 ```bash
 ping -c 4 10.7.18.254
 ```
 
-Run on Mac 2:
+From Mac 2:
 
 ```bash
 ping -c 4 10.7.19.246
 ```
 
-The recorded tests returned four replies with no packet loss in each direction.
+The recorded tests returned four replies and zero packet loss in both directions.
 
-### 2. Configure primary and backup DNS
+### 2. Configure DNS on both Macs
 
-The primary `dnsmasq` configuration belongs on Mac 1 and the backup configuration belongs on Mac 2. Each configuration should listen on loopback and that machine's current LAN address, and should contain the same project A records.
+Mac 1 runs the primary resolver using `dns/dnsmasq-primary.conf.example`. Mac 2 runs the backup resolver using `dns/dnsmasq-backup.conf.example`. Both configurations should contain the same project records for the normal baseline:
 
-Normal steady-state mapping:
-
-```text
-app.team1.test  -> 10.7.18.254
-api.team1.test  -> 10.7.18.254
+```ini
+address=/app.team1.test/10.7.18.254
+address=/api.team1.test/10.7.18.254
+local-ttl=30
 ```
 
-The application A record was intentionally changed to `10.7.19.246` during controlled edge-migration tests. Restore the normal mapping on **both** DNS servers after the migration test.
-
-Directly query each resolver to identify which server answered:
+The primary configuration listens on loopback and Mac 1's LAN address; the backup configuration listens on loopback and Mac 2's LAN address. Each DNS service is queried directly during testing so the responding server is unambiguous:
 
 ```bash
 dig @10.7.19.246 app.team1.test +noall +answer
 dig @10.7.18.254 app.team1.test +noall +answer
 ```
 
-The client resolver list used Mac 1 first and Mac 2 second. macOS resolver selection and retry behavior is operating-system dependent; the order should not be described as a guaranteed strict primary/secondary failover mechanism. The failover test stopped the primary service, flushed the client DNS cache, and confirmed an answer from `10.7.18.254`.
+The recorded client resolver list placed Mac 1 before Mac 2. macOS resolver selection and retry behavior is operating-system dependent; do not assume that listing two DNS servers guarantees deterministic primary/secondary failover in every application.
 
-### 3. Start the backend services
+Before changing client DNS, record the current setting:
 
-The Node.js server is parameterised by backend identity and port. From the repository root, run the corresponding command on each host if the `node-backend/server.js` file is present:
+```bash
+networksetup -getdnsservers "Wi-Fi"
+```
+
+The project resolver list can be configured with:
+
+```bash
+sudo networksetup -setdnsservers "Wi-Fi" 10.7.19.246 10.7.18.254
+```
+
+Restore the previous DNS setting after testing. If the prior setting was automatic, use `empty` to return the service to DHCP-provided DNS:
+
+```bash
+sudo networksetup -setdnsservers "Wi-Fi" empty
+```
+
+### 3. Start the backends
+
+The Phase 2 Node.js server is parameterised by `BACKEND_ID` and `PORT`.
 
 **Mac 1 — Backend A:**
 
 ```bash
-BACKEND_ID=A PORT=3001 node node-backend/server.js
+./scripts/run-backend-a-node.sh
 ```
 
 **Mac 2 — Backend B:**
 
 ```bash
-BACKEND_ID=B PORT=3002 node node-backend/server.js
+./scripts/run-backend-b-node.sh
 ```
 
-Keep each service running while testing. In separate Terminal windows, verify health:
+If launching manually, use the actual committed path to `server.js`. The recorded terminal session launched `server.js` from the `~/cn-project` directory with `BACKEND_ID=A PORT=3001` on Mac 1 and `BACKEND_ID=B PORT=3002` on Mac 2.
+
+Verify the health endpoints:
 
 ```bash
-# On Mac 1
+# Run on Mac 1
 curl -i http://127.0.0.1:3001/health
 
-# On Mac 2
+# Run on Mac 2
 curl -i http://127.0.0.1:3002/health
 ```
 
-Expected JSON identifies the backend as `A` or `B` and reports a healthy status.
+Backend A should identify itself as `A`; Backend B should identify itself as `B`.
 
-### 4. Configure TLS and nginx
+### 4. Configure the local TLS certificate
 
-Generate or install the local development certificate using the project's `mkcert` instructions. The certificate must cover both `app.team1.test` and `api.team1.test`. Nginx on Mac 2 is the active edge on TCP `8443`; its upstream pool contains Backend A at `10.7.19.246:3001` and Backend B at `127.0.0.1:3002`.
+The certificate used by nginx must include both `app.team1.test` and `api.team1.test` as Subject Alternative Names. The recorded setup used `mkcert` and TLS 1.2 at the nginx edge.
 
-Validate nginx before starting or reloading it:
+Example certificate generation (run from a protected local working directory):
 
 ```bash
-nginx -t
+mkcert -install
+mkcert -cert-file edge-cert.pem -key-file edge-key.pem \
+  app.team1.test api.team1.test
+chmod 600 edge-key.pem
 ```
 
-Then test the HTTPS endpoint. For a certificate-trust test, do **not** use `-k`:
+Install/trust the corresponding mkcert root CA on every client that must verify the certificate. If the CA is distributed to Mac 1, transfer only `rootCA.pem`; **never transfer or commit `rootCA-key.pem`**. Verify certificate trust with `curl` without `-k`:
 
 ```bash
 curl -v https://app.team1.test:8443/api/status
 ```
 
-If the local CA has not been trusted on the client, fix the trust-store setup rather than treating `curl -k` as successful certificate validation. A separate TLS transport test using `-k` does not prove that the certificate chain is trusted.
+A successful TLS handshake is not the same as successful certificate-chain validation. In the recorded tests, certificate verification succeeded in the Mac 2 curl path, while a separate OpenSSL verification on Mac 1 reported a local-issuer/trust-store error. Align the trust stores before claiming that both Macs validate the certificate.
 
-### 5. Configure backend isolation
+### 5. Configure nginx
 
-The PF examples are stored under `firewall/`. The intended policy is:
+Mac 2 is the active edge on TCP `8443`. Its upstream pool contains:
 
-- Mac 1: permit Backend A traffic from Mac 2 (the nginx edge), then block other inbound Wi-Fi traffic to port `3001`;
-- Mac 2: block direct inbound Wi-Fi traffic to port `3002`; nginx reaches Backend B through loopback.
+```nginx
+upstream backend_pool {
+    server 10.7.19.246:3001 max_fails=1 fail_timeout=10s;
+    server 127.0.0.1:3002 max_fails=1 fail_timeout=10s;
+}
+```
 
-Review the host's parent PF configuration and anchor include before loading any rules. Keep a backup of the existing PF configuration and confirm the active rules with `pfctl` after loading. A rule file that has not been linked through the parent ruleset is not proof that the rule is active.
+The active server listens on `8443 ssl`, uses the certificate/key generated for the project names, and proxies requests to `http://backend_pool`.
+
+Validate the configuration before starting or reloading nginx:
+
+```bash
+nginx -t
+```
+
+Check whether a process already owns port `8443`:
+
+```bash
+lsof -nP -iTCP:8443 -sTCP:LISTEN
+```
+
+The recorded setup already had an nginx master/worker pair listening on port `8443` on each relevant host. Starting a duplicate nginx instance therefore produced `Address already in use`. Inspect the existing process and its configuration before deciding whether to reload it; do not repeatedly start another copy.
+
+The upstream failure settings are passive failure handling. They are not a continuous active health-check system.
+
+### 6. Apply PF backend restrictions
+
+The project PF examples are in `firewall/`. The recorded policy was:
+
+- **Mac 1:** allow Backend A traffic from Mac 2 (`10.7.18.254`) and block other inbound Wi-Fi traffic to port `3001`.
+- **Mac 2:** block inbound Wi-Fi traffic to port `3002`. Nginx reaches Backend B through loopback (`127.0.0.1:3002`), not through the Wi-Fi interface.
+
+The rules were loaded into the project anchor `com.apple/cnproject`. Before applying rules:
+
+1. Save the existing `/etc/pf.conf` and relevant PF state.
+2. Confirm the parent PF configuration includes the project anchor.
+3. Review the rule order and peer IP address.
+4. Apply the project rules and inspect the active anchor with `pfctl`.
+5. Test both the intended nginx path and the direct peer path.
+6. Restore the saved baseline after the demonstration.
+
+A rule file being present on disk does not prove that it is active. Verify the anchor and parent ruleset. The recorded two-host test confirmed Backend B's local health endpoint remained healthy while a direct peer request to `10.7.18.254:3002` timed out. Testing every unauthorized source against both backends would require an independent third client.
+
+---
 
 ## API endpoints
 
 | Method | Path | Cache behavior | Purpose |
 |---|---|---|---|
-| `GET` | `/` | Application response | Basic service identification |
-| `GET` | `/api/status` | `Cache-Control: no-store` | Backend identifier, status, hostname and port |
-| `GET` | `/health` | `Cache-Control: no-store` | Health check |
+| `GET` | `/` | Application response | Basic service identity and running status |
+| `GET` | `/api/status` | `Cache-Control: no-store` | Backend ID, status, hostname, and port |
+| `GET` | `/health` | `Cache-Control: no-store` | Health response for local/service checks |
 | `GET` | `/api/info` | `public, max-age=30` with ETag | HTTP cache-validation demonstration |
 
-Backend responses expose the upstream selected by nginx:
+Backend responses include an upstream-identification header:
 
 ```http
 X-Backend: A
 ```
 
-or
+or:
 
 ```http
 X-Backend: B
 ```
 
-The `/api/info` endpoint uses the ETag `"cn-project-v1"`. A matching `If-None-Match` request is expected to return `304 Not Modified` without a response body.
+The `/api/info` endpoint uses ETag `"cn-project-v1"`. A matching `If-None-Match` validator returns `304 Not Modified` without a response body.
 
 Example requests:
 
@@ -346,24 +450,128 @@ curl -i -H 'If-None-Match: "cn-project-v1"' \
   https://app.team1.test:8443/api/info
 ```
 
-## Phase 1 verification
+---
 
-The following tests were recorded during the project:
+## Phase 1 results
 
 | Test | Recorded result |
 |---|---|
-| LAN reachability | Bidirectional ping: 4/4 replies and 0% packet loss in the recorded runs |
-| DNS | Primary and backup resolvers returned project records in direct-query tests |
-| Backend services | Backend A on port `3001` and Backend B on port `3002` returned identifying JSON |
-| HTTPS/TLS | TLS 1.2 negotiation and HTTPS response observed through nginx on port `8443` |
-| Load balancing | Repeated HTTPS requests alternated `X-Backend: A` and `X-Backend: B` in baseline tests |
-| HTTP cache validation | `200 OK` with `Cache-Control` and ETag, followed by `304 Not Modified` for a matching validator |
-| Packet analysis | Wireshark screenshots show DNS, TCP/8443, TLS handshake and Backend A HTTP traffic |
+| LAN connectivity | Mac 1 and Mac 2 exchanged ping replies; each recorded test showed 4/4 replies and 0% packet loss. |
+| Private DNS | Both DNS services answered direct queries for the project hostnames. |
+| Backend services | Backend A on TCP `3001` and Backend B on TCP `3002` returned identifying JSON and healthy status. |
+| HTTPS/TLS | The client established TCP to port `8443`; TLS 1.2 negotiation and HTTPS responses were observed. |
+| Round-robin load balancing | Repeated HTTPS requests returned alternating `X-Backend: A` and `X-Backend: B` headers in the baseline tests. |
+| HTTP cache validation | `/api/info` returned `200 OK` with `Cache-Control` and ETag; a matching conditional request returned `304 Not Modified`. |
+| Packet analysis | Wireshark screenshots show DNS query/response, TCP handshake to `8443`, TLS handshake/certificate messages, and Backend A HTTP traffic. |
 
-Useful commands:
+Example load-balancing test:
 
 ```bash
-# Direct DNS queries
+for i in {1..10}; do
+  echo "REQUEST $i"
+  curl -sS -D - -o /dev/null \
+    https://app.team1.test:8443/api/status | grep -i '^X-Backend:'
+done
+```
+
+If certificate trust is not installed on the client, correct the trust store rather than treating `curl -k` as a successful certificate-validation test.
+
+---
+
+## Phase 2 results
+
+| Extension | Recorded result | Scope / qualification |
+|---|---|---|
+| **A — Backup DNS resolver** | **Verified** | With the Mac 1 primary resolver stopped and the client DNS cache flushed, normal resolution answered from Mac 2 (`10.7.18.254`). Both project names resolved in the recorded run. |
+| **B — DNS TTL and controlled record change** | **Verified** | An isolated dnsmasq caching resolver on Mac 1 at `127.0.0.1:5300` showed the old answer with a decreasing TTL, the new answer after expiry, and an immediate update after a manual cache flush. |
+| **C — Service isolation with PF** | **Verified within the two-Mac test scope** | Rules were loaded in the project anchor on both hosts. Edge-to-backend traffic remained functional; a direct peer request to Mac 2 port `3002` timed out. A third independent client was not available to test every unauthorized source against both ports. |
+| **D — Backend failover and recovery** | **Verified** | Six HTTPS requests were served by Backend B while Backend A was stopped. After A was restarted, both A and B reappeared in the upstream response sequence. |
+| **E — Controlled edge migration** | **Cutover verified; cache-overlap evidence not captured** | Changing `app.team1.test` to `10.7.19.246` reached the existing nginx listener on Mac 1 and returned HTTP 200 from Backend A. The old-cache/new-edge overlap was not separately captured. |
+| **F — Faculty-injected troubleshooting** | **Reserved for live evaluation** | The team practised layered diagnosis using real incidents (TCP refusal, port conflict, stale PID, DNS record mismatch, and certificate trust). The faculty-selected fault itself is not claimed as completed. |
+
+### Extension A — Backup DNS
+
+Mac 2 ran a second dnsmasq resolver at `10.7.18.254`. The primary resolver on Mac 1 was stopped, the client DNS cache was flushed, and an ordinary lookup returned a response from `10.7.18.254#53`. Direct `dig @server` queries were also used to distinguish the two DNS services.
+
+### Extension B — DNS TTL and cache migration
+
+The TTL experiment used a temporary caching resolver on Mac 1 at `127.0.0.1:5300`, forwarding queries to the primary DNS server. The experiment used a 30-second TTL and changed `app.team1.test` between `10.7.18.254` and `10.7.19.246`.
+
+Observed sequence:
+
+1. Initial cache fill: `10.7.18.254`, TTL 30.
+2. Authoritative record changed to `10.7.19.246`; cached resolver continued to return `10.7.18.254` with a reduced TTL (observed TTL 25).
+3. After waiting beyond expiry, the cached resolver returned `10.7.19.246` with TTL 30.
+4. The authoritative record was changed back to `10.7.18.254`; the cache continued to return `10.7.19.246` with a reduced TTL (observed TTL 26).
+5. Sending SIGHUP to the caching dnsmasq process flushed its cache; the next query returned `10.7.18.254` with TTL 30.
+
+This was an isolated resolver-cache experiment. It does not assume a specific macOS system-cache expiration behavior.
+
+### Extension C — PF service isolation
+
+The Mac 1 rule allowed inbound Backend A traffic from Mac 2 and blocked other inbound Wi-Fi traffic to port `3001`. The Mac 2 rule blocked inbound Wi-Fi traffic to port `3002`, while nginx continued reaching Backend B through loopback. The test scope was limited by having two physical hosts; an independent third client was not available for a complete unauthorized-source matrix.
+
+### Extension D — Backend failover
+
+The nginx upstream pool used passive failure parameters (`max_fails`, `fail_timeout`) and retry directives. In the recorded controlled failure, Backend A was stopped remotely and six requests through the Mac 2 edge returned `X-Backend: B`. Backend A was restarted and its health endpoint returned healthy; subsequent requests again included both A and B.
+
+This verifies backend-level failover in the tested scenario. Mac 2's active nginx edge remains a single point of failure.
+
+### Extension E — Controlled edge migration
+
+Mac 1 already had an nginx process listening on port `8443`; its master PID matched the saved standby PID file. A direct request to that listener returned a Backend A response. During the cutover test, `app.team1.test` was changed to `10.7.19.246`; DNS returned the new address and HTTPS connected to Mac 1 and returned HTTP 200 with Backend A. The attempt to start another nginx process failed because the port was already in use; the existing listener, not a newly launched duplicate, was used for the test.
+
+The DNS cutover was demonstrated. A separate capture showing old cached clients reaching the old edge while fresh lookups reach the new edge remains additional evidence to collect if required by the evaluator.
+
+### Extension F — Troubleshooting
+
+The team practised a layered troubleshooting sequence:
+
+1. **DNS:** `dig` and inspect the answer/answering server.
+2. **IP/TCP:** `ping`, `nc`, and `lsof` to distinguish host reachability from a listening service port.
+3. **TLS:** `curl -v` and `openssl s_client` to inspect handshake and trust.
+4. **HTTP/application:** inspect status code, JSON body, and `X-Backend` header.
+
+The faculty-injected fault is performed during the live evaluation, so this README does not claim that specific event has already occurred.
+
+---
+
+## Wireshark evidence
+
+Captures were taken on Mac 2's Wi-Fi interface `en0`. The supplied screenshots show the following observations:
+
+1. General DNS traffic, including project DNS and unrelated laptop DNS activity.
+2. A filtered query for `app.team1.test`; the captured A-record answer at that instant was `10.7.19.246`, which was being used during migration testing.
+3. TCP SYN, SYN-ACK, ACK and subsequent TLS records for the connection to port `8443`.
+4. TLS 1.2 handshake messages, SNI `app.team1.test`, server certificate exchange and encrypted application data.
+5. HTTP traffic from Mac 2 to Mac 1 port `3001`, including `GET /api/status` and an HTTP 200 JSON response.
+6. TCP reset packets observed during connection teardown and troubleshooting. A TCP reset alone is not proof of a specific PF rule.
+
+### Useful display filters
+
+| Purpose | Wireshark display filter |
+|---|---|
+| All DNS | `dns` |
+| Project hostname | `dns.qry.name == "app.team1.test"` |
+| HTTPS edge TCP | `tcp.port == 8443` |
+| TLS handshake | `tls.handshake` |
+| Backend ports | `tcp.port == 3001 || tcp.port == 3002` |
+| TCP resets | `tcp.flags.reset == 1` |
+
+**Capture note:** Backend B is reached through Mac 2's loopback interface. A capture on `en0` may not show that loopback connection. Keep the original `.pcap`/`.pcapng` file when available; screenshots are useful report evidence but do not replace the original packet capture.
+
+---
+
+## Verification commands
+
+Run these from a machine with the relevant services active. Replace addresses if DHCP has changed them.
+
+```bash
+# LAN reachability
+ping -c 4 10.7.19.246
+ping -c 4 10.7.18.254
+
+# Query primary and backup DNS independently
 dig @10.7.19.246 app.team1.test +noall +answer
 dig @10.7.18.254 app.team1.test +noall +answer
 
@@ -371,91 +579,61 @@ dig @10.7.18.254 app.team1.test +noall +answer
 curl http://10.7.19.246:3001/health
 curl http://127.0.0.1:3002/health
 
-# Repeated load-balancer requests
-for i in {1..10}; do
-  curl -sS -D - -o /dev/null \
-    https://app.team1.test:8443/api/status | grep -i '^X-Backend:'
-done
+# HTTPS response through the active edge
+curl -v https://app.team1.test:8443/api/status
+
+# Inspect listeners
+lsof -nP -iTCP:3001 -sTCP:LISTEN
+lsof -nP -iTCP:3002 -sTCP:LISTEN
+lsof -nP -iTCP:8443 -sTCP:LISTEN
+
+# Inspect project PF anchor
+sudo pfctl -a com.apple/cnproject -sr
 ```
 
-## Phase 2 extensions and results
+The repository's `scripts/` directory also documents helper commands for backend startup, DNS checks, HTTPS, load balancing, TTL demonstration, firewall testing, and DNS restoration. Review each script and its configured paths/addresses before execution.
 
-| Extension | Result recorded | Notes |
-|---|---|---|
-| A — Backup DNS resolver | **Verified** | With the primary resolver stopped and the client cache flushed, the client received answers from Mac 2 (`10.7.18.254`). |
-| B — DNS TTL and controlled record change | **Verified** | An isolated cache test with a 30-second TTL showed the previous A record until expiry; a manual cache flush caused an immediate lookup of the changed record. |
-| C — Backend isolation with PF | **Verified within the two-Mac test scope** | PF rules were loaded on both hosts; edge-to-backend traffic remained functional and a peer's direct request to Mac 2 port `3002` timed out. A third independent client was not available to probe every source against both backend ports. |
-| D — Backend high-availability failover | **Verified** | Six requests were served by Backend B while Backend A was stopped. After A restarted, both A and B reappeared in the upstream response sequence. |
-| E — DNS-based edge migration | **Cutover verified; overlap evidence not captured** | Changing the `app.team1.test` A record to Mac 1 reached an already-running nginx listener on `10.7.19.246:8443` and returned HTTP 200 from Backend A. The old-cache/new-edge overlap was not separately captured. |
-| F — Faculty-injected troubleshooting | **Reserved for live evaluation** | The team practised layered diagnosis using observed DNS, TCP refusal, port conflict, stale PID and certificate-trust incidents. The faculty-selected fault itself is not claimed as completed. |
-
-### Backend failover behavior
-
-Nginx uses passive upstream failure handling (`max_fails`, `fail_timeout` and `proxy_next_upstream`). This is not continuous active health checking. In the recorded test, Backend A was stopped, six requests were served by Backend B, and after A was restarted the A/B distribution resumed.
-
-### Known availability limitation
-
-Mac 2's active nginx edge is still a single point of failure in the normal topology. Backup DNS and backend failover do not by themselves create another active HTTPS entry point. The Mac 1 nginx listener was used as a DNS cutover target, but the old-cache/new-edge overlap behavior should be demonstrated separately before claiming a fully seamless edge failover.
-
-## Wireshark evidence
-
-The project uses Wireshark on the Wi-Fi interface `en0`. Useful display filters:
-
-| Purpose | Display filter |
-|---|---|
-| All DNS | `dns` |
-| Project hostname query | `dns.qry.name == "app.team1.test"` |
-| HTTPS edge TCP | `tcp.port == 8443` |
-| TLS handshake | `tls.handshake` |
-| Backend ports | `tcp.port == 3001 || tcp.port == 3002` |
-| TCP resets | `tcp.flags.reset == 1` |
-
-The collected screenshots document:
-
-1. general DNS traffic, including project and unrelated laptop DNS activity;
-2. the filtered `app.team1.test` query and its A-record answer at the captured instant;
-3. the TCP three-way handshake to port `8443`;
-4. TLS handshake messages, including SNI and certificate exchange;
-5. HTTP traffic from Mac 2 to Backend A on Mac 1, including `GET /api/status` and an HTTP 200 JSON response;
-6. TCP reset events observed during testing.
-
-**Capture note:** Backend B is reached by nginx over Mac 2's loopback interface. A capture on `en0` may not show that loopback leg. Keep the original `.pcap` or `.pcapng` file when available; screenshots are useful report evidence but do not replace the packet capture.
+---
 
 ## Troubleshooting
 
-| Symptom | Likely layer / check |
-|---|---|
-| `dig` returns the wrong IP | DNS record drift or cached answer. Query each server explicitly with `dig @<server> ...`; inspect both dnsmasq files and the TTL. |
-| `ping` works but `nc` reports connection refused | IP reachability is present, but the target TCP port has no accepting listener or is actively rejecting the connection. Check `lsof -nP -iTCP:<port> -sTCP:LISTEN`. |
-| nginx reports `Address already in use` | Another process already owns the listener. Inspect with `lsof -nP -iTCP:8443 -sTCP:LISTEN`; reload the existing nginx instance rather than blindly starting another. |
-| A saved PID cannot be killed | The PID file may be stale. Identify the live listener with `lsof` and verify the process before stopping it. |
-| HTTPS handshake works but certificate verification fails | Check the certificate SANs, validity dates, client trust store and mkcert root CA installation. Do not confuse a successful TLS handshake with successful certificate-chain validation. |
-| Backend B works locally but cannot be reached from the peer | Check the intended PF restriction and test via the nginx edge. Backend B is intended to be reached through `127.0.0.1:3002`. |
+| Symptom | Likely explanation | First checks |
+|---|---|---|
+| `dig` returns an unexpected IP | DNS record drift or cached answer | Query each DNS server directly; inspect both dnsmasq configs and TTL. |
+| `ping` works but `nc` says `Connection refused` | The host is reachable, but the target port has no accepting listener or is rejecting the connection | `lsof -nP -iTCP:<port> -sTCP:LISTEN` on the destination. |
+| nginx says `Address already in use` | Another process already owns the listener | `lsof -nP -iTCP:8443 -sTCP:LISTEN`; inspect/reload the existing instance rather than starting a duplicate. |
+| PID file refers to a missing process | Stale PID file | Re-identify the live listener with `lsof`; verify process identity before stopping it. |
+| TLS handshake works but verification fails | Local CA is missing from that client's trust store, or certificate SAN/validity is wrong | Inspect certificate SANs and run `curl -v` without `-k`; check mkcert root CA trust. |
+| Backend B works locally but peer cannot connect | PF is restricting inbound Wi-Fi traffic as intended | Check local `127.0.0.1:3002`, active PF anchor, and access through nginx. |
+| Backend A is unavailable | Backend A process stopped or port 3001 is not listening | Check `lsof` and `/health`; test the surviving upstream through nginx. |
 
-Use a layered diagnostic order: **DNS → IP/TCP → TLS → HTTP/application**. This helps identify which layer is failing before changing configuration.
+---
 
 ## Security and cleanup
 
-- Do not commit TLS private keys, the mkcert CA private key, passwords, or machine-specific secret files.
-- Keep certificate and key files outside version control; add local runtime and capture artifacts to `.gitignore` as appropriate.
-- Use `curl` without `-k` when demonstrating certificate trust. If `-k` is used for a temporary transport-only diagnostic, state clearly that it bypasses certificate validation.
-- Back up PF configuration before changing it. Verify that the project anchor is actually included by the parent PF ruleset before relying on its rules.
-- Record the current DNS settings before changing the macOS resolver list. Restore the original settings after the demonstration so normal network access is not disrupted.
-- After migration tests, restore both DNS servers to the intended steady-state record (`app.team1.test` and `api.team1.test` pointing to the selected active edge).
-- Stop only project-owned processes. Confirm process identity and listening ports before sending signals.
+- Never commit TLS private keys, the mkcert CA private key, passwords, or other secrets.
+- Use `.gitignore` for private keys, local certificates, logs, PID files, and machine-specific runtime artifacts as appropriate.
+- Do not distribute `rootCA-key.pem`. If another Mac needs to trust the local CA, distribute only the public `rootCA.pem` through a trusted channel.
+- Use `curl` without `-k` when demonstrating certificate validation. A `curl -k` request is a transport diagnostic and does not prove certificate trust.
+- Back up PF configuration before changing it. Confirm that the parent PF ruleset includes the project anchor, inspect the active rules, and restore the saved baseline after testing.
+- Record existing macOS DNS settings before changing them. Restore the previous setting after the demonstration.
+- Restore both DNS servers to the agreed steady-state A records after migration tests.
+- Confirm process identity and listening ports before stopping services; do not rely on stale PID files.
+
+---
 
 ## Team
 
-| Team member | Machine | Main responsibilities |
+| Team member | Machine | Project responsibilities |
 |---|---|---|
-| Shivansh Tiwari | Mac 1 (`10.7.19.246`) | Primary DNS, Backend A, standby/cutover nginx listener, Mac 1 PF policy and testing |
-| Navprabhat Singh | Mac 2 (`10.7.18.254`) | Backup DNS, active nginx HTTPS edge/load balancer, Backend B, Mac 2 PF policy, packet capture and testing |
+| Shivansh Tiwari | Mac 1 (`10.7.19.246`) | Primary DNS, Backend A, existing standby/cutover nginx listener, Mac 1 PF policy, DNS/edge migration tests |
+| Navprabhat Singh | Mac 2 (`10.7.18.254`) | Backup DNS, active nginx HTTPS edge/load balancer, Backend B, Mac 2 PF policy, packet capture and integration tests |
 
 ---
 
 ## Project reference
 
 - **Repository:** [ShivanshTIwaRISS/CN_Project](https://github.com/ShivanshTIwaRISS/CN_Project)
-- **Project domain:** `team1.test`
-- **Normal service URL:** `https://app.team1.test:8443`
-- **Environment:** Two macOS laptops on a private LAN; no cloud hosting required.
+- **Private DNS namespace:** `team1.test`
+- **Normal application URL:** `https://app.team1.test:8443`
+- **Deployment:** Two macOS laptops on a private LAN; no cloud hosting required.

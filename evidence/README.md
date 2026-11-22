@@ -1,46 +1,69 @@
-# Evidence Directory
+# Evidence Catalog — Private Network Service Platform
 
-This directory holds captured proof of the working Phase 1 infrastructure.
+This directory contains empirical evidence, logs, and verification outputs demonstrating the correctness of Phase 1 and Phase 2 implementations.
 
-> **Do not fabricate evidence.** Only add files that were actually captured
-> during testing. Unfilled folders are intentional — they mark items still
-> pending capture.
-
----
-
-## Folder Guide
-
-| Folder | What to put here |
-|--------|-----------------|
-| `dns/` | `dig` terminal output (`.txt`), DNS screenshots |
-| `https/` | `curl` and `curl -I` output (`.txt`), browser screenshots showing valid cert |
-| `load-balancing/` | Terminal output showing `X-Backend: A` / `X-Backend: B` alternating |
-| `caching/` | `curl -I` output showing `Cache-Control: max-age=60`; 304 evidence if captured |
-| `wireshark/` | Wireshark screenshots (`.png`); **note:** `.pcapng` binary files are in `.gitignore` — host them externally |
-| `failures/` | Curl error output when CA not trusted, DNS fails, or a backend is stopped |
+> [!IMPORTANT]
+> **Authenticity Policy:** No logs, outputs, or test runs are fabricated. Only actual captured test results are stored. Binary packet capture files (`.pcap`, `.pcapng`) are git-ignored to prevent repository bloat and should be hosted externally or submitted via course portal.
 
 ---
 
-## Naming Convention
-
-Use descriptive names, e.g.:
+## Directory Structure & Evidence Map
 
 ```
-dns/dig-app-teamX-test.txt
-dns/dig-api-teamX-test.txt
-https/curl-api-status-200.txt
-https/curl-I-headers.txt
-load-balancing/round-robin-10-requests.txt
-caching/cache-control-header.txt
-wireshark/dns-query-response.png
-wireshark/tls-handshake.png
-failures/curl-no-ca-trust-error.txt
-failures/backend-a-stopped-nginx-error.txt
+evidence/
+├── README.md                          Overview and evidence catalog
+├── dns/
+│   ├── .gitkeep
+│   └── ttl-proof.txt                  Actual output from Extension B TTL decrement & flush test
+├── phase2/
+│   ├── .gitkeep
+│   └── phase2-mac1-test.txt           Complete live audit output of Mac 1 Phase 2 subsystems
+├── caching/
+│   └── .gitkeep                       Cache-Control and 304 conditional request traces
+├── failures/
+│   └── .gitkeep                       Negative proofs, service interruption outputs
+├── https/
+│   └── .gitkeep                       TLS certificate validation & HTTPS responses
+├── load-balancing/
+│   └── .gitkeep                       Round-robin alternation logs
+└── wireshark/
+    └── .gitkeep                       Wireshark trace documentation and frame references
 ```
 
 ---
 
-## Current Status
+## Primary Captured Evidence Files
 
-See [`docs/phase1-checklist.md`](../docs/phase1-checklist.md) for a full
-list of what is verified vs. pending.
+### 1. `evidence/dns/ttl-proof.txt`
+- **Subsystem:** Extension B (DNS TTL & Controlled Record Change)
+- **Host Captured On:** Mac 1 (`10.7.19.246`)
+- **Key Empirical Data:**
+  - Initial cached response for `app.team1.test`: `10.7.18.254` with TTL 30.
+  - Stale cached response after authoritative record change to `10.7.19.246`: returns `10.7.18.254` with remaining TTL 25.
+  - Automatic refresh after 30 seconds: returns `10.7.19.246` with fresh TTL 30.
+  - Manual flush test: authoritative reset to `10.7.18.254`; caching resolver returns stale `10.7.19.246` (TTL 26); sending `kill -HUP` flushes memory immediately; next query returns `10.7.18.254` (TTL 30).
+
+### 2. `evidence/phase2/phase2-mac1-test.txt`
+- **Subsystem:** Phase 2 Integrated Audit (Extensions A, C, D, E)
+- **Host Captured On:** Mac 1 (`10.7.19.246`)
+- **Key Empirical Data:**
+  - Primary and Backup DNS resolution verification for both `app.team1.test` and `api.team1.test`.
+  - Backend A health response: `{"backend":"A","status":"healthy"}`.
+  - macOS Packet Filter (PF) anchor `com.apple/cnproject` rule activation.
+  - Standby Edge HTTPS response on port 8443 serving Backend A.
+  - Active Edge HTTPS response on Mac 2 (`10.7.18.254:8443`) serving Backend B.
+  - Direct connection block to Backend B port 3002:
+    `curl: (28) Failed to connect to 10.7.18.254 port 3002 after 3004 ms: Timeout was reached`
+  - DNS-based edge migration verification.
+
+---
+
+## Wireshark & Packet Capture Files
+
+As specified in `.gitignore`, binary `.pcapng` packet captures are not tracked in the git repository to keep it lightweight.
+
+### Key Captured Packet Sequences
+1. **DNS Query & Response:** UDP port 53 query for `app.team1.test` and response containing `10.7.18.254`.
+2. **TCP Three-Way Handshake:** Capture on port 8443 showing `SYN` -> `SYN-ACK` -> `ACK` before TLS negotiation.
+3. **TLS 1.2 / 1.3 Handshake:** ClientHello (SNI `app.team1.test`), ServerHello, Certificate exchange, and Finished frames.
+4. **Encrypted Application Data:** Shows that all HTTP request and response payloads are fully encrypted on the wire.

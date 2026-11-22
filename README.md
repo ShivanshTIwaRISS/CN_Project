@@ -1,560 +1,372 @@
-# Private Network Service Platform — Phase 1
+# Private Network Service Platform — Phase 1 & Phase 2
 
-**Course:** Computer Networks
-**Infrastructure:** Type 2 — 2 physical Macs with combined roles
-
----
-
-## Team
-
-| Name | Role |
-|------|------|
-| Nav Prabhat Singh | Mac 1 — DNS + Backend A |
-| Shivansh Tiwari | Mac 2 — nginx HTTPS + Backend B |
+**Course:** Computer Networks Course Project  
+**Target Environment:** macOS (Up to 4 laptops; deployed across 2 physical MacBooks with combined logical roles)  
+**Private Domain Namespace:** `team1.test` (`app.team1.test`, `api.team1.test`)  
+**Deployment Type:** 100% Fully Local Private LAN — No Cloud Hosting Required
 
 ---
 
-## Architecture
+## 1. Project Purpose & Executive Summary
 
-### Machines
+The **Private Network Service Platform** is an enterprise-grade private service environment constructed entirely from scratch across physical MacBooks on a shared local network. Rather than relying on managed cloud infrastructure (such as AWS Route 53, Application Load Balancers, or Cloudflare), every network layer is built, configured, and operated directly by the team:
 
-| Machine | LAN IP | Services |
-|---------|--------|----------|
-| Mac 1 | `10.7.15.60` | dnsmasq DNS `:53` · Backend A `:3001` |
-| Mac 2 | `10.7.21.116` | nginx HTTPS `:8443` · Backend B `:3002` |
+- **Private DNS Resolution:** Authoritative and redundant local DNS servers (`dnsmasq`) with TTL management and failover.
+- **TLS Termination & Edge Routing:** Reverse proxying, TLS 1.2/1.3 termination with trusted local certificates, and client traffic abstraction (`nginx`).
+- **Application Services:** Dual HTTP REST backend instances featuring status monitoring, cache validation, and ETag revalidation.
+- **Network Resilience:** High-availability passive upstream failover and warm standby edge migration.
+- **Service Isolation:** Kernel-level packet filtering via macOS Packet Filter (`pfctl`) to isolate application backends.
+- **Empirical Protocol Analysis:** Full packet-level verification of DNS queries, TCP three-way handshakes, TLS handshakes, and HTTP/1.1 exchanges.
 
-> **Lab IP note:** These are current DHCP leases. They may change between
-> sessions. Always run `ifconfig en0` to verify before testing.
-
-### Request Flow
-
-```
-Client (Mac 2 or any LAN machine)
-  │
-  │  1. DNS query (UDP 53)
-  ▼
-Mac 1  —  dnsmasq :53
-  │
-  │  app.teamX.test → 10.7.21.116
-  │
-  ▼
-Mac 2  —  nginx :8443 (HTTPS, TLS terminated)
-  │
-  │  round-robin upstream
-  ├──────────────► Mac 1  Backend A :3001
-  │
-  └──────────────► Mac 2  Backend B :3002
-
-Response: JSON body + X-Backend: A or B + Cache-Control: max-age=60
-```
-
-### DNS Records
-
-| Hostname | Resolves To | Target |
-|----------|-------------|--------|
-| `app.teamX.test` | `10.7.21.116` | Mac 2 nginx |
-| `api.teamX.test` | `10.7.21.116` | Mac 2 nginx |
-
-> DNS points to the **nginx proxy**, not directly to the backends.
+> **Core Principle:** *The application stays simple — the network is the project.*
 
 ---
 
-## Backend API
+## 2. Team Members & Physical Machine Allocation
 
-Both backends expose the same endpoints:
+Following course constraints for a two-student team, the four logical networking roles are distributed across two physical Apple MacBooks:
 
-| Method | Path | Response |
-|--------|------|----------|
-| `GET` | `/` | `{"backend":"A"/"B","message":"Hello from Backend A/B"}` |
-| `GET` | `/api/status` | `{"backend":"A"/"B","status":"ok","server":"Backend A/B"}` |
-| `HEAD` | `/` or `/api/status` | Same headers, no body |
+| Machine | Student Name | LAN IPv4 Address (`en0`) | Logical Roles & Services |
+|---------|--------------|--------------------------|--------------------------|
+| **Mac 1** | **Shivansh Tiwari** | `10.7.19.246` | • **Primary DNS Resolver** (`dnsmasq` port 53)<br>• **Backend Server A** (Node.js/Python port 3001)<br>• **Standby HTTPS Reverse Proxy** (`nginx` port 8443)<br>• **Service Isolation Anchor** (`pfctl` port 3001)<br>• **DNS & Application Testing Client** |
+| **Mac 2** | **Nav Prabhat Singh** | `10.7.18.254` | • **Backup DNS Resolver** (`dnsmasq` port 53)<br>• **Active HTTPS Edge & Load Balancer** (`nginx` port 8443)<br>• **Backend Server B** (Node.js/Python port 3002)<br>• **Service Isolation Anchor** (`pfctl` port 3002)<br>• **DNS & Application Testing Client** |
 
-### Response Headers (always present)
-
-| Header | Value |
-|--------|-------|
-| `X-Backend` | `A` or `B` — identifies which backend handled the request |
-| `Cache-Control` | `max-age=60` |
-| `Content-Type` | `application/json` |
+> [!NOTE]
+> **DHCP Address Notice:** IP addresses (`10.7.19.246` and `10.7.18.254`) are assigned via DHCP on the local private Wi-Fi network. Configuration templates and scripts use parameterized environment variables (`MAC1_IP`, `MAC2_IP`, `PRIMARY_DNS`, `BACKUP_DNS`) making updates straightforward if DHCP leases change.
 
 ---
 
-## TLS
+## 3. Network Architecture & Topology
 
-nginx on Mac 2 terminates HTTPS on port **8443**.
+```
+                                  Shared Private LAN
+                     (Wi-Fi / 10.7.0.0/16 Subnet - en0 Interfaces)
+         ══════════════════════════════════════════════════════════════════
+                         ║                                  ║
+         ┌───────────────╨────────────────┐ ┌───────────────╨────────────────┐
+         │             Mac 1              │ │             Mac 2              │
+         │     Owner: Shivansh Tiwari     │ │    Owner: Nav Prabhat Singh    │
+         │         (10.7.19.246)          │ │         (10.7.18.254)          │
+         ├────────────────────────────────┤ ├────────────────────────────────┤
+         │ [Primary DNS Resolver]         │ │ [Backup DNS Resolver]          │
+         │  dnsmasq (Port 53)             │ │  dnsmasq (Port 53)             │
+         │                                │ │                                │
+         │ [Standby HTTPS Edge]           │ │ [Active HTTPS Edge & LB]       │
+         │  nginx (Port 8443)             │ │  nginx (Port 8443)             │
+         │                                │ │                                │
+         │ [Backend Server A]             │ │ [Backend Server B]             │
+         │  Node.js / Python (Port 3001)  │ │  Node.js / Python (Port 3002)  │
+         │                                │ │                                │
+         │ [Packet Filter Anchor]         │ │ [Packet Filter Anchor]         │
+         │  pfctl com.apple/cnproject     │ │  pfctl com.apple/cnproject     │
+         │                                │ │                                │
+         │ [Test & Diagnosis Client]      │ │ [Test & Diagnosis Client]      │
+         └────────────────────────────────┘ └────────────────────────────────┘
+```
 
-| Item | Detail |
-|------|--------|
-| Local CA | TeamX Local Root CA |
-| Server cert | `app.crt` (signed by the CA) |
-| SAN | `DNS:app.teamX.test`, `DNS:api.teamX.test` |
-| Client trust | CA imported into macOS Keychain → `curl` works without `-k` |
+### Port Allocation Table
 
-See [`tls/README.md`](tls/README.md) for full certificate generation commands.
+| Port | Protocol | Host Machine | Bound Service | Public / Internal Scope |
+|------|----------|--------------|---------------|-------------------------|
+| `53` | UDP/TCP | Mac 1 (`10.7.19.246`) | Primary `dnsmasq` Resolver | LAN accessible (`127.0.0.1, 10.7.19.246`) |
+| `53` | UDP/TCP | Mac 2 (`10.7.18.254`) | Backup `dnsmasq` Resolver | LAN accessible (`127.0.0.1, 10.7.18.254`) |
+| `8443` | TCP (TLS) | Mac 2 (`10.7.18.254`) | Active `nginx` HTTPS Edge | Public LAN entry point (`0.0.0.0:8443`) |
+| `8443` | TCP (TLS) | Mac 1 (`10.7.19.246`) | Standby `nginx` HTTPS Edge | Warm standby for migration (`0.0.0.0:8443`) |
+| `3001` | TCP (HTTP)| Mac 1 (`10.7.19.246`) | Backend A (REST API) | Internal service (protected by PF firewall) |
+| `3002` | TCP (HTTP)| Mac 2 (`10.7.18.254`) | Backend B (REST API) | Internal service (loopback only / PF protected) |
+| `5300` | UDP/TCP | Mac 1 (`127.0.0.1`) | Caching DNS Resolver | Localhost only (isolated TTL test suite) |
 
 ---
 
-## Verified Commands
+## 4. Operational DNS States
 
-All commands below have been tested and produce the documented output.
+The platform implements two controlled DNS operational configurations:
 
-### DNS
+### State 1: Normal Operational Baseline (Active Edge on Mac 2)
+- `app.team1.test` → `10.7.18.254` (Mac 2 Active Nginx)
+- `api.team1.test` → `10.7.18.254` (Mac 2 Active Nginx)
+- Traffic arrives at Mac 2 port 8443, terminates TLS, and load balances 50/50 across Backend A (`10.7.19.246:3001`) and Backend B (`127.0.0.1:3002`).
 
-```bash
-# Query Mac 1 DNS directly
-dig @10.7.15.60 app.teamX.test
-dig @10.7.15.60 api.teamX.test
+### State 2: Controlled Edge Migration (Standby Edge on Mac 1)
+- `app.team1.test` → `10.7.19.246` (Mac 1 Standby Nginx)
+- `api.team1.test` → `10.7.18.254` (Mac 2 Active Nginx - unchanged)
+- Demonstrates traffic cutover without service disruption or new hardware.
 
-# Query via system resolver (Mac 2 must use Mac 1 as DNS server)
-dig app.teamX.test
-```
+---
 
-Expected: `ANSWER SECTION` shows `10.7.21.116`; `SERVER: 10.7.15.60#53`
+## 5. Backend Runtimes & Endpoints
 
-### Backend direct (no nginx, no TLS)
+To preserve the working Phase 1 Python implementation while maintaining complete fidelity to the live Phase 2 tested Node.js implementation, both runtimes are supported and reconciled:
 
-```bash
-curl http://10.7.15.60:3001
-curl http://10.7.21.116:3002
-curl -I http://10.7.15.60:3001/api/status
-curl -I http://10.7.21.116:3002/api/status
-```
+- **Phase 1 Baseline (Python):** `backend-a/server.py` and `backend-b/server.py`
+- **Phase 2 Tested Runtime (Node.js):** `node-backend/server.js` (parameterized via `BACKEND_ID=A|B` and `PORT=3001|3002`)
 
-### HTTPS through nginx
+### API Specification & Endpoints
 
-```bash
-# Full request — no -k needed (CA trusted in Keychain)
-curl https://app.teamX.test:8443/api/status
+| Method | Endpoint | Cache-Control | Content-Type | Response Structure / Description |
+|--------|----------|---------------|--------------|----------------------------------|
+| `GET` | `/` | — | `application/json` | Welcome payload confirming service running & hostname |
+| `GET` | `/api/status` | `no-store` | `application/json` | Status check: `{"backend":"A/B","status":"ok","port":3001/3002}` |
+| `GET` | `/health` | `no-store` | `application/json` | Health probe: `{"backend":"A/B","status":"healthy"}` |
+| `GET` | `/api/info` | `public, max-age=30` | `application/json` | Caching test: returns payload with `ETag: "cn-project-v1"`; supports conditional `304 Not Modified` |
 
-# Headers only
-curl -I https://app.teamX.test:8443/api/status
-```
-
-Expected response:
-```
-HTTP/1.1 200 OK
-X-Backend: A          ← or B, depending on round-robin turn
-Cache-Control: max-age=60
-Content-Type: application/json
-```
-
-### Load balancing (round-robin verification)
-
-```bash
-for i in {1..10}; do
-    echo -n "Request $i: "
-    curl -s -D - https://app.teamX.test:8443/api/status \
-        -o /dev/null | grep -i "X-Backend"
-done
-```
-
-Expected: `X-Backend: A` and `X-Backend: B` alternating.
-
-### nginx config validation
-
-```bash
-nginx -t
+### Required Response Header
+Every backend response includes the mandatory routing header:
+```http
+X-Backend: A    (or X-Backend: B)
 ```
 
 ---
 
-## Setup Instructions
+## 6. Phase 2 Extensions & Status Verification Table
+
+| Extension | Title | Target Subsystem | Implementation Status | Verified Evidence Location |
+|-----------|-------|------------------|-----------------------|----------------------------|
+| **Extension A** | Backup DNS Resolver | DNS Redundancy | **PASSED** | Primary failure test; backup answered via `10.7.18.254` |
+| **Extension B** | DNS TTL & Controlled Record Change | DNS Caching / TTL | **PASSED** | Full decrement & SIGHUP flush log: `evidence/dns/ttl-proof.txt` |
+| **Extension C** | Service Isolation (Backend Firewall) | macOS Packet Filter | **PASSED WITH TWO-MAC TOPOLOGY LIMITATION** | Direct access timeout log: `evidence/phase2/phase2-mac1-test.txt` |
+| **Extension D** | High Availability Backend Failover | Nginx Upstream HA | **PASSED** | Passive failover & recovery sequence: `B, B, A, B, A, B, A, B` |
+| **Extension E** | Controlled Edge Migration | DNS Cutover | **IMPLEMENTED AND MIGRATION VERIFIED; OLD-CACHE/NEW-EDGE OVERLAP EVIDENCE PENDING** | Standby edge routing to Backend A verified; overlap evidence pending |
+| **Extension F** | Faculty-Injected Troubleshooting | Multi-Layer Diagnostics | **PENDING LIVE FACULTY EVALUATION** | Diagnostic handbook: `docs/troubleshooting.md` |
+
+---
+
+## 7. Deep-Dive: Phase 2 Extension Architecture
+
+### Extension A: Backup DNS Resolver
+- **Primary:** `10.7.19.246:53` (Mac 1). **Backup:** `10.7.18.254:53` (Mac 2).
+- Client stub resolvers configure both nameservers: `networksetup -setdnsservers "Wi-Fi" 10.7.19.246 10.7.18.254`.
+- **Fault Test:** Primary `dnsmasq` stopped on Mac 1. Client `dig app.team1.test` resolved seamlessly to `10.7.18.254` with `SERVER: 10.7.18.254#53`.
+- Primary restarted and both resolvers synchronized.
+
+### Extension B: DNS TTL & Controlled Record Change
+- Uses `local-ttl=30` in authoritative `dnsmasq`.
+- Dedicated caching resolver run on Mac 1 at `127.0.0.1:5300` forwarding to `10.7.19.246:53`.
+- **Observed sequence in `evidence/dns/ttl-proof.txt`:**
+  1. Initial cache: `10.7.18.254` (TTL 30).
+  2. Authoritative changed to `10.7.19.246`.
+  3. Caching resolver continued returning stale `10.7.18.254` with decrementing TTL (observed TTL 25).
+  4. At 30s expiry, cache refreshed and returned `10.7.19.246` (TTL 30).
+  5. Authoritative changed back to `10.7.18.254`; cached answer returned `10.7.19.246` (TTL 26).
+  6. Sending `kill -HUP` flushed cache immediately; next query returned `10.7.18.254` (TTL 30).
+
+### Extension C: Service Isolation via macOS Packet Filter (PF)
+- Anchors created under `com.apple/cnproject` to protect macOS baseline configuration.
+- **Mac 1 Policy (`firewall/pf-mac1.conf.example`):** Allows incoming port 3001 exclusively from Mac 2 (`10.7.18.254`) and loopback; drops all other incoming connections to 3001.
+- **Mac 2 Policy (`firewall/pf-mac2.conf.example`):** Restricts port 3002 to loopback (`127.0.0.1`); blocks all incoming LAN connections to 3002.
+- **Observed Result:** Direct `curl http://10.7.18.254:3002/` from Mac 1 timed out after 3004 ms, while Nginx reverse proxy access remained completely healthy.
+- **Topology Limitation Disclosure:** Two physical MacBooks cannot execute an independent 3rd client machine unauthorized probe against Mac 1 Backend A.
+
+### Extension D: High Availability Failover
+- Active Nginx upstream pool:
+  ```nginx
+  upstream backend_pool {
+      server 10.7.19.246:3001 max_fails=1 fail_timeout=10s;
+      server 127.0.0.1:3002 max_fails=1 fail_timeout=10s;
+  }
+  ```
+- Passive failover directives: `proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;`.
+- **Fault Test:** Backend A process killed. Six consecutive client requests returned `200 OK` with `X-Backend: B` without client error.
+- **Recovery Test:** Backend A restarted. Requests demonstrated automatic recovery sequence: `B, B, A, B, A, B, A, B`.
+- **SPOF Analysis:** Active Nginx on Mac 2 is an edge single point of failure; standby edge on Mac 1 mitigates this through DNS migration.
+
+### Extension E: Controlled Edge Migration
+- Standby Nginx on Mac 1 (`10.7.19.246:8443`) configured with identical TLS certificates.
+- Authoritative DNS cutover: `app.team1.test` → `10.7.19.246`.
+- Direct HTTPS request reached Mac 1 and served Backend A.
+
+### Extension F: Faculty-Injected Troubleshooting
+- Reserved for live faculty evaluation slot.
+- Comprehensive diagnostic runbook available in `docs/troubleshooting.md`.
+
+---
+
+## 8. Installation & Setup Runbooks
 
 ### Prerequisites
+Install Homebrew dependencies on both Macs:
+```bash
+brew install dnsmasq nginx mkcert
+```
 
-Both Macs must be on the same Wi-Fi LAN.
+### Mac 1 Setup (Shivansh Tiwari — 10.7.19.246)
+1. **Configure Primary DNS:**
+   ```bash
+   sudo cp dns/dnsmasq-primary.conf.example /opt/homebrew/etc/dnsmasq.conf
+   sudo brew services start dnsmasq
+   ```
+2. **Start Backend A (Node.js):**
+   ```bash
+   ./scripts/run-backend-a-node.sh &
+   ```
+3. **Configure Standby Nginx (for Extension E):**
+   ```bash
+   sudo cp nginx/phase2-standby.conf.example /opt/homebrew/etc/nginx/servers/phase2-standby.conf
+   ```
 
-Install Homebrew tools on each Mac:
+### Mac 2 Setup (Nav Prabhat Singh — 10.7.18.254)
+1. **Configure Backup DNS:**
+   ```bash
+   sudo cp dns/dnsmasq-backup.conf.example /opt/homebrew/etc/dnsmasq.conf
+   sudo brew services start dnsmasq
+   ```
+2. **Start Backend B (Node.js):**
+   ```bash
+   ./scripts/run-backend-b-node.sh &
+   ```
+3. **Start Active Nginx Edge & Load Balancer:**
+   ```bash
+   sudo cp nginx/phase2-active.conf.example /opt/homebrew/etc/nginx/servers/phase2-active.conf
+   sudo nginx -t && sudo brew services start nginx
+   ```
+
+### Client DNS Configuration (Run on Both Macs)
+```bash
+sudo networksetup -setdnsservers "Wi-Fi" 10.7.19.246 10.7.18.254
+```
+
+---
+
+## 9. Verification & Test Scripts
+
+All scripts are stored in `scripts/` and have been verified with `bash -n`:
 
 ```bash
-# Install Python (if not already present via Xcode tools)
-brew install python
+# Test Primary and Backup DNS
+./scripts/test-dns.sh
 
-# Mac 1 — install dnsmasq
-brew install dnsmasq
+# Test DNS failover
+./scripts/test-dns-failover.sh
 
-# Mac 2 — install nginx
-brew install nginx
+# Test direct backend responses (Ports 3001 & 3002)
+./scripts/test-backends.sh
+
+# Test HTTPS, TLS trust, and Caching / ETag (no -k)
+./scripts/test-https.sh
+
+# Test round-robin load balancing (10 requests)
+./scripts/test-load-balancing.sh
+
+# Audit all local Phase 2 service ports
+./scripts/test-phase2-services.sh
+
+# Run the automated DNS TTL experiment
+./scripts/demo-dns-ttl.sh
+
+# Verify Service Isolation & Packet Filter status
+./scripts/test-firewall.sh
+
+# Safely restore baseline normal DNS
+./scripts/restore-dns.sh
 ```
 
 ---
 
-### Mac 1 Setup (DNS + Backend A)
+## 10. Final 11-Step Demonstration Sequence
 
-#### 1. Configure dnsmasq
-
-```bash
-# Find the config file location
-brew info dnsmasq | grep -A3 "Caveats"
-# Typically: /opt/homebrew/etc/dnsmasq.conf  (Apple Silicon)
-#            /usr/local/etc/dnsmasq.conf      (Intel)
-
-# Copy the example config
-sudo cp dns/dnsmasq.conf.example /opt/homebrew/etc/dnsmasq.conf
-
-# Edit to confirm your LAN IP:
-#   listen-address=127.0.0.1,<MAC1_IP>
-#   address=/app.teamX.test/<MAC2_IP>
-#   address=/api.teamX.test/<MAC2_IP>
-```
-
-#### 2. Start dnsmasq
-
-```bash
-sudo brew services start dnsmasq
-# Check it is listening:
-sudo lsof -nP -i :53 | grep dnsmasq
-```
-
-#### 3. Run Backend A
-
-```bash
-# From the repo root:
-bash scripts/run-backend-a.sh
-
-# Or directly:
-cd backend-a
-python3 server.py
-```
-
-Verify: `curl http://10.7.15.60:3001`
+For the live evaluation, follow the sequence in [`docs/phase2-demo-runbook.md`](docs/phase2-demo-runbook.md):
+1. **Step 1:** Present network topology diagram and machine inventory table (`docs/architecture.md`).
+2. **Step 2:** Execute bidirectional ping between Mac 1 and Mac 2 (confirm 0.0% loss).
+3. **Step 3:** Resolve `app.team1.test` via DNS (`dig app.team1.test`).
+4. **Step 4:** Open `https://app.team1.test:8443` over HTTPS without certificate warnings (no `-k`).
+5. **Step 5:** Demonstrate round-robin load balancing (`./scripts/test-load-balancing.sh`).
+6. **Step 6:** Inspect Wireshark packet captures (DNS query/reply, TCP 3-way handshake, TLS handshake).
+7. **Step 7:** Demonstrate HTTP caching (`Cache-Control: public, max-age=30`) and ETag revalidation (`304 Not Modified`).
+8. **Step 8:** Stop Backend A; verify transparent failover to Backend B (`X-Backend: B`), restart Backend A, show recovery sequence.
+9. **Step 9:** Demonstrate Phase 2 resilience (Backup DNS failover, TTL decrement, or Edge cutover).
+10. **Step 10:** Diagnose faculty-injected configuration fault using [`docs/troubleshooting.md`](docs/troubleshooting.md).
+11. **Step 11:** Individual viva defense based on component ownership.
 
 ---
 
-### Mac 2 Setup (nginx HTTPS + Backend B)
+## 11. Security & Hygiene Rules
 
-#### 1. Configure Mac 2 DNS to point to Mac 1
-
-```bash
-# Set Mac 1 as the DNS server for Wi-Fi
-networksetup -setdnsservers "Wi-Fi" 10.7.15.60
-
-# Flush DNS cache
-sudo dscacheutil -flushcache
-sudo killall -HUP mDNSResponder
-
-# Verify
-networksetup -getdnsservers "Wi-Fi"
-# Expected: 10.7.15.60
-```
-
-#### 2. Set up TLS certificates
-
-```bash
-mkdir -p ~/cn-project/nginx/ssl
-
-# Generate CA + server cert (see tls/README.md for full commands)
-# Place app.crt and app.key in ~/cn-project/nginx/ssl/
-# NEVER commit app.key or teamX-rootCA.key
-
-# Trust the CA in macOS Keychain:
-sudo security add-trusted-cert -d -r trustRoot \
-    -k /Library/Keychains/System.keychain teamX-rootCA.crt
-```
-
-#### 3. Deploy nginx config
-
-```bash
-# Copy phase1.conf and update USERNAME and paths:
-cp nginx/phase1.conf /opt/homebrew/etc/nginx/servers/phase1.conf
-# Edit ssl_certificate / ssl_certificate_key paths to match your home dir
-
-# Validate:
-nginx -t
-
-# Start nginx:
-brew services start nginx
-# Or reload if already running:
-nginx -s reload
-```
-
-#### 4. Run Backend B
-
-```bash
-bash scripts/run-backend-b.sh
-
-# Or directly:
-cd backend-b
-python3 server.py
-```
-
-Verify: `curl http://10.7.21.116:3002`
-
-#### 5. Full end-to-end test
-
-```bash
-curl https://app.teamX.test:8443/api/status
-curl -I https://app.teamX.test:8443/api/status
-bash scripts/test-load-balancing.sh
-```
+| Security Principle | Enforcement Detail |
+|--------------------|--------------------|
+| **No Private Keys Committed** | `*.key`, `*.pem`, `*.csr`, and `*.srl` are strictly ignored by `.gitignore` |
+| **No Insecure Curl Calls** | Never recommend or use `curl -k` / `--insecure`. Local Root CA is installed in macOS Keychain |
+| **No Hardcoded Passwords** | All configurations and scripts use sanitized environment variables |
+| **Safe Packet Filter Rollback** | Rules run exclusively inside anchor `com.apple/cnproject`; roll back via `sudo pfctl -a com.apple/cnproject -F all` |
+| **No Disruption to Main Network** | `scripts/restore-dns.sh` provides safe restoration to normal operational baseline |
 
 ---
 
-## Packet Analysis & Verification Evidence
+## 12. Complete Documentation Directory
 
-All infrastructure components and network protocol flows were captured and validated using terminal logs and Wireshark network packet traces (`wireshark_Wi-FiL0A0v3.pcapng`).
-
-### 1. Toolchain & Backend B Server Execution
-
-Terminal verification showing Homebrew installations, software versions, and Backend B (`server.py`) handling live traffic:
-
-```text
-==> Pouring openssl@4--4.0.2_1.arm64_sequoia.bottle.tar.gz
-==> Installing nginx
-==> Pouring nginx--1.31.6.arm64_sequoia.bottle.tar.gz
-
-> nginx -v
-nginx version: nginx/1.31.6
-
-> python3 --version
-Python 3.14.7
-
-> openssl version
-OpenSSL 4.0.2 25 Aug 2026 (Library: OpenSSL 4.0.2 25 Aug 2026)
-
-> python3 ~/cn-project/backend-b/server.py
-Backend B running on 0.0.0.0:3002
-[Backend B] 127.0.0.1 - "GET / HTTP/1.1" 200 -
-[Backend B] 127.0.0.1 - "GET /api/status HTTP/1.1" 200 -
-[Backend B] 10.7.21.116 - "HEAD /api/status HTTP/1.1" 200 -
-[Backend B] 10.7.21.116 - "GET /api/status HTTP/1.1" 200 -
-[Backend B] 10.7.21.116 - "GET / HTTP/1.1" 200 -
-```
-
-**Key Highlights:**
-- **Software Stack:** Nginx 1.31.6, Python 3.14.7, OpenSSL 4.0.2 verified.
-- **Backend B Service:** Successfully runs on `0.0.0.0:3002`, answering both `GET` and `HEAD` requests with `200 OK` and sending proper custom headers (`X-Backend: B`, `Cache-Control: max-age=60`).
+| Document | Description |
+|----------|-------------|
+| [`docs/architecture.md`](docs/architecture.md) | Full 2-Mac network topology, service mapping, request flow diagrams, and protocol stack analysis |
+| [`docs/phase1-checklist.md`](docs/phase1-checklist.md) | Completed Phase 1 build and observation verification checklist |
+| [`docs/phase2-checklist.md`](docs/phase2-checklist.md) | Phase 2 hardening, resilience, and failover verification checklist |
+| [`docs/phase2-implementation.md`](docs/phase2-implementation.md) | Technical implementation guide for all six Phase 2 extensions |
+| [`docs/phase2-results.md`](docs/phase2-results.md) | Empirical test transcripts, data tables, and verification outputs |
+| [`docs/phase2-demo-runbook.md`](docs/phase2-demo-runbook.md) | Step-by-step 11-step final demonstration script for evaluators |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Systematic 4-layer diagnostic guide and fault isolation matrix |
+| [`docs/roles-and-responsibilities.md`](docs/roles-and-responsibilities.md) | Individual responsibilities, port allocation, and viva preparation guide |
+| [`evidence/README.md`](evidence/README.md) | Directory guide and catalog of empirical proof files |
+| [`tls/README.md`](tls/README.md) | Certificate Authority architecture, generation commands, and trust store setup |
 
 ---
 
-### 2. Wireshark HTTPS & TLS Session Capture (`tcp.port == 8443`)
-
-Wireshark display filter: `tcp.port == 8443` captures full HTTPS session interactions between client `10.7.15.60` (Mac 1) and Nginx reverse proxy `10.7.21.116:8443` (Mac 2):
-
-```
-Client (10.7.15.60)                                   Nginx Server (10.7.21.116:8443)
-      │                                                              │
-      │ ── Frame 9692: [SYN, ECE, CWR] Seq=0 Win=65535 MSS=1460 ───> │ (TCP Handshake Step 1)
-      │ <─ Frame 9693: [SYN, ACK] Seq=0 Ack=1 Win=65535 MSS=1460 ──── │ (TCP Handshake Step 2)
-      │ ── Frame 9694: [ACK] Seq=1 Ack=1 ──────────────────────────> │ (TCP Handshake Step 3)
-      │                                                              │
-      │ ── Frame 9695: TLS Client Hello (SNI=app.teamx.test) ──────> │ (TLS Handshake & SNI)
-      │ <─ Frame 9696: [ACK] Seq=1 Ack=325 ───────────────────────── │
-      │ <─ Frame 9697: Server Hello, Change Cipher Spec, App Data ── │ (Cert Exchange & Cipher Setup)
-      │                                                              │
-      │ ── Frame 9698: [ACK] Seq=325 Ack=1653 ─────────────────────> │
-      │ ── Frame 9716: Application Data (Encrypted HTTP Request) ──> │ (Encrypted HTTPS Traffic)
-      │ ── Frame 9717: [RST, ACK] Seq=349 Ack=1653 Win=130752 ─────> │ (Client Session Teardown)
-```
-
-**Analysis & Protocol Observations:**
-1. **TCP 3-Way Handshake:** Clean SYN, SYN-ACK, ACK handshake on destination port 8443 with Window Scale `WS=64` and Maximum Segment Size `MSS=1460`.
-2. **TLS 1.2/1.3 Handshake & SNI Extension:** Packet 9695 clearly shows the `Client Hello` carrying Server Name Indication (`SNI=app.teamx.test`), ensuring Nginx matches the correct virtual host and returns the local CA-signed `app.crt`.
-3. **Encrypted Payload Exchange:** Subsequent packets exchange TLS `Application Data` without exposing plaintext HTTP methods, endpoints, or response bodies over the local network.
-
----
-
-### 3. Wireshark HTTP Request & Response Statistics
-
-Wireshark HTTP Protocol Packet Counter statistics breakdown:
-
-| Metric | Count | Percentage | Details |
-|--------|-------|------------|---------|
-| **Total HTTP Packets** | **8** | 100% | Direct unencrypted backend traffic |
-| **HTTP Response Packets** | **4** | 50.00% | All responses from upstream backends |
-| ↳ `2xx: Success (200 OK)` | 4 | 100.00% | 0% errors (no 4xx/5xx failures) |
-| **HTTP Request Packets** | **4** | 50.00% | Inbound backend queries |
-| ↳ `GET` Requests | 4 | 100.00% | API status & health probes |
-
-**Analysis:**
-- Confirms 100% success rate (`200 OK`) across direct backend tests without dropped connections or gateway errors.
-
----
-
-### 4. TCP Handshake Analysis — SYN Flag Filtering (`tcp.flags.syn == 1 && tcp.flags.ack == 0`)
-
-Wireshark display filter: `tcp.flags.syn == 1 && tcp.flags.ack == 0`
-
-- **Purpose:** Isolates initial TCP connection initiation requests (packets with SYN bit set and ACK bit cleared).
-- **Observed Behavior:**
-  - Client `10.7.15.60` initiates outbound TCP connections to ports `443` (HTTPS) and `80` (HTTP).
-  - Packet headers show `Len=0`, initial `Seq=0`, initial window size `Win=65535`, `MSS=1460`, `WS=64`, and `SACK_PERM` (Selective Acknowledgement Permitted).
-  - Demonstrates standard TCP state machine initiation across client applications.
-
----
-
-### 5. TCP Handshake Analysis — SYN-ACK Flag Filtering (`tcp.flags.syn == 1 && tcp.flags.ack == 1`)
-
-Wireshark display filter: `tcp.flags.syn == 1 && tcp.flags.ack == 1`
-
-- **Purpose:** Isolates server responses acknowledging connection requests and completing the second leg of the TCP 3-way handshake.
-- **Observed Behavior:**
-  - **Backend A Port 3001:** Packet 52856 captures `10.7.15.60:3001 -> 10.7.21.116:51789 [SYN, ACK]`, confirming Backend A is reachable and actively accepting inbound sockets.
-  - **Nginx HTTPS Port 8443:** Multiple SYN-ACK response frames from `10.7.21.116:8443` to `10.7.15.60`, confirming TLS listener responsiveness.
-  - **Service Readiness:** Confirms bidirectional network connectivity and open listener sockets across ports `3001`, `3002`, and `8443`.
-
----
-
-### 6. Physical LAN Connectivity (ICMP Ping Test)
-
-Verification of physical Layer 3 connectivity across the local Wi-Fi network:
-
-```bash
-> ping -c 4 10.7.15.60
-PING 10.7.15.60 (10.7.15.60): 56 data bytes
-64 bytes from 10.7.15.60: icmp_seq=0 ttl=64 time=29.203 ms
-64 bytes from 10.7.15.60: icmp_seq=1 ttl=64 time=49.266 ms
-64 bytes from 10.7.15.60: icmp_seq=2 ttl=64 time=28.082 ms
-64 bytes from 10.7.15.60: icmp_seq=3 ttl=64 time=12.153 ms
-
---- 10.7.15.60 ping statistics ---
-4 packets transmitted, 4 packets received, 0.0% packet loss
-round-trip min/avg/max/stddev = 12.153/29.676/49.266/13.168 ms
-```
-
-**Outcome:** 0.0% packet loss confirms solid bidirectional LAN connectivity between Mac 2 (`10.7.21.116`) and Mac 1 (`10.7.15.60`).
-
----
-
-### 7. Private vs. Public DNS Resolution & Negative Proofs
-
-Testing isolation of private `.test` domains against public DNS, and demonstrating system resolver failure/recovery modes:
-
-```bash
-# 1. Negative Proof: Querying public DNS (8.8.8.8) fails (as expected)
-> dig @8.8.8.8 app.teamX.test
-;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 19754
-;; AUTHORITY SECTION:
-.    86371   IN   SOA   a.root-servers.net. ...
-
-# 2. Failure Demonstration: Removing custom DNS causes resolution failure
-> sudo networksetup -setdnsservers "Wi-Fi" empty
-> curl -v https://app.teamX.test:8443
-* Could not resolve host: app.teamX.test
-* Closing connection
-curl: (6) Could not resolve host: app.teamX.test
-
-# 3. Recovery: Pointing to Mac 1 DNS and flushing resolver cache
-> sudo networksetup -setdnsservers "Wi-Fi" 10.7.15.60
-> sudo dscacheutil -flushcache
-> sudo killall -HUP mDNSResponder
-> dig app.teamX.test
-;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 52757
-;; ANSWER SECTION:
-app.teamX.test.   0   IN   A   10.7.21.116
-;; SERVER: 10.7.15.60#53(10.7.15.60)
-```
-
-**Key Takeaways:**
-- Demonstrates why a local DNS server (`dnsmasq`) is necessary for internal `.test` domains.
-- Validates macOS system resolver cache management (`dscacheutil`, `mDNSResponder`).
-
----
-
-### 8. Verbose HTTPS & TLS 1.3 Validation with Trusted Local CA
-
-Full `curl -v` transcript demonstrating seamless TLS 1.3 negotiation with no `-k` bypass:
-
-```text
-> curl -v https://app.teamX.test:8443
-* Host app.teamX.test:8443 was resolved.
-* IPv4: 10.7.21.116
-* Trying 10.7.21.116:8443...
-* Connected to app.teamX.test (10.7.21.116) port 8443
-* ALPN: curl offers h2,http/1.1
-* (304) (OUT), TLS handshake, Client hello (1):
-* (304) (IN), TLS handshake, Server hello (2):
-* (304) (IN), TLS handshake, Certificate (11):
-* (304) (IN), TLS handshake, CERT verify (15):
-* (304) (IN), TLS handshake, Finished (20):
-* SSL connection using TLSv1.3 / AEAD-CHACHA20-POLY1305-SHA256
-* Server certificate:
-*  subject: CN=app.teamX.test
-*  start date: Sep 29 13:18:57 2026 GMT
-*  expire date: Jan 1 13:18:57 2029 GMT
-*  subjectAltName: host "app.teamX.test" matched cert's "app.teamX.test"
-*  issuer: CN=TeamX Local Root CA
-*  SSL certificate verify ok.
-> GET / HTTP/1.1
-> Host: app.teamX.test:8443
-> User-Agent: curl/8.7.1
-> Accept: */*
->
-< HTTP/1.1 200 OK
-< Server: nginx/1.31.6
-< Content-Type: application/json
-< Content-Length: 51
-< Connection: keep-alive
-< X-Backend: A
-< Cache-Control: max-age=60
-<
-{"backend": "A", "message": "Hello from Backend A"}
-```
-
----
-
-### 9. Live Round-Robin Alternation Verification
-
-Direct verification of Nginx round-robin upstream balancing across 6 consecutive requests:
-
-```bash
-> for i in {1..6}; do curl -s -D - https://app.teamX.test:8443/api/status -o /dev/null | grep -i "X-Backend"; done
-X-Backend: B
-X-Backend: A
-X-Backend: B
-X-Backend: A
-X-Backend: B
-X-Backend: A
-```
-
-**Result:** Perfect 50/50 alternating distribution between Backend B (`10.7.21.116:3002`) and Backend A (`10.7.15.60:3001`).
-
----
-
-## Security
-
-| Rule | Detail |
-|------|--------|
-| Never commit `*.key` | Private keys are blocked by `.gitignore` |
-| Never commit `*.csr` or `*.srl` | Also blocked by `.gitignore` |
-| No passwords or secrets in source | Verified — all configs use placeholder values |
-| CA private key stays local | `teamX-rootCA.key` lives only on Mac 2 |
-
----
-
-## Repository Structure
+## 13. Repository Tree
 
 ```
 .
-├── README.md
-├── .gitignore
+├── .gitignore                                 Git exclusions (keys, pem, pcap, logs)
+├── README.md                                  Master project documentation
 ├── backend-a/
-│   └── server.py              Python HTTP server, port 3001
+│   └── server.py                              Phase 1 Python Backend A (port 3001)
 ├── backend-b/
-│   └── server.py              Python HTTP server, port 3002
-├── nginx/
-│   ├── phase1.conf            Working nginx config (USERNAME placeholder)
-│   └── phase1.conf.example    Generic template with all placeholders
+│   └── server.py                              Phase 1 Python Backend B (port 3002)
+├── node-backend/
+│   └── server.js                              Phase 2 Node.js Backend (ports 3001/3002, ETag, Caching)
 ├── dns/
-│   └── dnsmasq.conf.example   dnsmasq template
-├── tls/
-│   └── README.md              CA architecture, cert generation, trust setup
+│   ├── dnsmasq.conf.example                   Baseline dnsmasq configuration
+│   ├── dnsmasq-primary.conf.example           Phase 2 Primary DNS (Mac 1)
+│   ├── dnsmasq-backup.conf.example            Phase 2 Backup DNS (Mac 2)
+│   └── dnsmasq-client-cache.conf.example      Isolated local caching resolver (port 5300)
+├── nginx/
+│   ├── phase1.conf                            Baseline Nginx reverse proxy
+│   ├── phase1.conf.example                    Baseline template
+│   ├── phase2-active.conf.example             Phase 2 Active Edge & HA LB (Mac 2)
+│   └── phase2-standby.conf.example            Phase 2 Standby Edge (Mac 1)
+├── firewall/
+│   ├── pf-mac1.conf.example                   Mac 1 PF rule (protect Backend A)
+│   └── pf-mac2.conf.example                   Mac 2 PF rule (protect Backend B)
 ├── scripts/
-│   ├── run-backend-a.sh
-│   ├── run-backend-b.sh
-│   ├── test-backends.sh       Direct IP tests
-│   ├── test-dns.sh            dig tests
-│   ├── test-https.sh          curl HTTPS (no -k)
-│   └── test-load-balancing.sh 10-request round-robin demo
+│   ├── run-backend-a.sh                       Launch Python Backend A
+│   ├── run-backend-b.sh                       Launch Python Backend B
+│   ├── run-backend-a-node.sh                  Launch Node.js Backend A
+│   ├── run-backend-b-node.sh                  Launch Node.js Backend B
+│   ├── test-backends.sh                       Test direct backend HTTP responses
+│   ├── test-dns.sh                            Test Primary & Backup DNS queries
+│   ├── test-dns-failover.sh                   Test DNS redundancy & failover
+│   ├── test-https.sh                          Test HTTPS & ETag 304 revalidation
+│   ├── test-load-balancing.sh                 Test round-robin distribution
+│   ├── test-phase2-services.sh                Audit local listening ports & services
+│   ├── demo-dns-ttl.sh                        Automated DNS TTL decrement test
+│   ├── test-firewall.sh                       Test service isolation & PF status
+│   └── restore-dns.sh                         Restore baseline normal DNS
 ├── docs/
-│   ├── architecture.md        Topology, protocol stack, flow diagrams
-│   └── phase1-checklist.md    Verified vs. pending evidence
+│   ├── architecture.md                        Architecture & protocol stack documentation
+│   ├── phase1-checklist.md                    Phase 1 completed checklist
+│   ├── phase2-checklist.md                    Phase 2 completed checklist
+│   ├── phase2-implementation.md               Phase 2 implementation guide
+│   ├── phase2-results.md                      Empirical test results & logs
+│   ├── phase2-demo-runbook.md                 11-step evaluation sequence
+│   ├── troubleshooting.md                     4-layer diagnostic guide
+│   └── roles-and-responsibilities.md          Team ownership & viva prep
+├── tls/
+│   └── README.md                              Local CA & trust instructions
 └── evidence/
-    ├── README.md
-    ├── dns/                   dig output, screenshots
-    ├── https/                 curl output, cert screenshots
-    ├── load-balancing/        round-robin terminal output
-    ├── caching/               Cache-Control / 304 evidence
-    ├── wireshark/             Wireshark screenshots
-    └── failures/              Error/failure demonstrations
+    ├── README.md                              Evidence catalog & guide
+    ├── dns/
+    │   └── ttl-proof.txt                      Captured Extension B TTL proof
+    ├── phase2/
+    │   └── phase2-mac1-test.txt               Captured Mac 1 integrated test audit
+    ├── caching/                               Cache-Control & ETag 304 traces
+    ├── failures/                              Failure & negative proof outputs
+    ├── https/                                 TLS verification outputs
+    ├── load-balancing/                        Round-robin test outputs
+    └── wireshark/                             Wireshark packet capture guides
 ```

@@ -1,108 +1,84 @@
-# Phase 1 Evidence Checklist
+# Phase 1 Evidence Checklist — Private Network Service Platform
 
-> **Key:**
-> - ✅ VERIFIED — tested and documented below
-> - ⬜ PENDING — not yet captured / evidence not yet in repo
-
----
-
-## Infrastructure
-
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 1 | LAN IP inventory (Mac 1, Mac 2) | ✅ VERIFIED | `ifconfig en0` on both Macs |
-| 2 | Ping between Mac 1 and Mac 2 | ✅ VERIFIED | 4 packets sent/rcvd, 0.0% loss, avg 29.6ms |
+> **Status Key:**
+> - ✅ VERIFIED — Fully implemented, tested, and evidence documented
+> - ⚠️ LIMITATION / PENDING — Specific physical topology limitation or reserved live evaluation
 
 ---
 
-## DNS
+## 1. Physical LAN & Infrastructure
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 3 | `dig @10.7.15.60 app.teamX.test` returns `10.7.21.116` | ✅ VERIFIED | tested on Mac 2 |
-| 4 | `dig @10.7.15.60 api.teamX.test` returns `10.7.21.116` | ✅ VERIFIED | tested on Mac 2 |
-| 5 | Mac 2 uses Mac 1 as DNS server | ✅ VERIFIED | `networksetup -getdnsservers "Wi-Fi"` → `10.7.15.60` |
-| 6 | `dig app.teamX.test` resolves via `10.7.15.60#53` (no `@`) | ✅ VERIFIED | system resolver working |
-
----
-
-## Backend Services
-
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 7 | Backend A responds on `10.7.15.60:3001` | ✅ VERIFIED | `curl http://10.7.15.60:3001` |
-| 8 | Backend B responds on `10.7.21.116:3002` | ✅ VERIFIED | `curl http://10.7.21.116:3002` |
-| 9 | Both backends return `X-Backend` header | ✅ VERIFIED | observed in `-I` output |
-| 10 | Both backends return `Cache-Control: max-age=60` | ✅ VERIFIED | observed in header output |
+| # | Check Item | Status | Verification Detail / Observed Output |
+|---|------------|--------|---------------------------------------|
+| 1 | LAN IP inventory (Mac 1 & Mac 2) | ✅ VERIFIED | Mac 1 (`10.7.19.246`), Mac 2 (`10.7.18.254`) on `en0` via `ifconfig en0` |
+| 2 | Bidirectional Ping Reachability | ✅ VERIFIED | 0.0% packet loss between Mac 1 and Mac 2 across private Wi-Fi subnet |
+| 3 | Documented 2-Mac Topology | ✅ VERIFIED | Documented in `docs/architecture.md` with combined logical roles |
 
 ---
 
-## nginx / HTTPS
+## 2. Private DNS Resolution
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 11 | `nginx -t` passes | ✅ VERIFIED | config syntax OK |
-| 12 | nginx listens on port 8443 | ✅ VERIFIED | confirmed on Mac 2 |
-| 13 | HTTPS trusted **without** `-k` | ✅ VERIFIED | TeamX Local Root CA trusted in Keychain |
-| 14 | `curl https://app.teamX.test:8443/api/status` succeeds | ✅ VERIFIED | 200 OK |
-| 15 | Response headers include `X-Backend` and `Cache-Control` | ✅ VERIFIED | `curl -I` confirmed |
-
----
-
-## Load Balancing
-
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 16 | Round-robin distributes across both backends | ✅ VERIFIED | `X-Backend: A` and `X-Backend: B` alternating in repeated requests |
+| # | Check Item | Status | Verification Detail / Observed Output |
+|---|------------|--------|---------------------------------------|
+| 4 | Primary DNS resolves `app.team1.test` | ✅ VERIFIED | `dig @10.7.19.246 app.team1.test` returns `10.7.18.254` (TTL 30) |
+| 5 | Primary DNS resolves `api.team1.test` | ✅ VERIFIED | `dig @10.7.19.246 api.team1.test` returns `10.7.18.254` (TTL 30) |
+| 6 | Client uses Mac 1 as DNS resolver | ✅ VERIFIED | Configured via `networksetup -setdnsservers "Wi-Fi" 10.7.19.246` |
+| 7 | Unqualified DNS lookup (no `@`) | ✅ VERIFIED | `dig app.team1.test` successfully answers via local DNS server |
+| 8 | Negative DNS proof on public resolver | ✅ VERIFIED | `dig @8.8.8.8 app.team1.test` returns `NXDOMAIN` (isolated namespace) |
 
 ---
 
-## TLS Certificate
+## 3. Backend HTTP REST Services
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 17 | `openssl verify -CAfile teamX-rootCA.crt app.crt` → `OK` | ✅ VERIFIED | chain verified |
-| 18 | SAN includes `app.teamX.test` and `api.teamX.test` | ✅ VERIFIED | from cert inspection |
-
----
-
-## Caching Evidence
-
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 19 | `Cache-Control: max-age=60` header present on responses | ✅ VERIFIED | seen in `curl -I` output |
-| 20 | Actual cache hit / 304 Not Modified demonstration | ⬜ PENDING | needs screenshot or curl output saved to `evidence/caching/` |
+| # | Check Item | Status | Verification Detail / Observed Output |
+|---|------------|--------|---------------------------------------|
+| 9 | Backend A responds on port 3001 | ✅ VERIFIED | Direct query: `curl http://10.7.19.246:3001/` returns JSON |
+| 10 | Backend B responds on port 3002 | ✅ VERIFIED | Direct query: `curl http://10.7.18.254:3002/` returns JSON |
+| 11 | Backend Identifier Header (`X-Backend`) | ✅ VERIFIED | `X-Backend: A` and `X-Backend: B` present in HTTP response headers |
+| 12 | Health & Status Endpoints | ✅ VERIFIED | `/api/status` returns status ok; `/health` returns healthy |
+| 13 | Dual-Runtime Compatibility | ✅ VERIFIED | Both Python (`server.py`) and Node.js (`server.js`) runtimes tested |
 
 ---
 
-## Wireshark Captures
+## 4. Edge Reverse Proxy & Load Balancer
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 21 | DNS query/response capture | ⬜ PENDING | save `.pcapng` to `evidence/wireshark/` |
-| 22 | TCP 3-way handshake capture | ✅ VERIFIED | captured in `wireshark_Wi-FiL0A0v3.pcapng` (`tcp.port == 8443`) |
-| 23 | TLS ClientHello / ServerHello capture | ✅ VERIFIED | captured with `SNI=app.teamx.test` and ServerHello |
-| 24 | Encrypted HTTP data capture | ✅ VERIFIED | Application Data frames captured and analyzed |
-
-> Note: `.pcapng` files are listed in `.gitignore` (binary, large).
-> Upload captures as GitHub release assets or store externally.
+| # | Check Item | Status | Verification Detail / Observed Output |
+|---|------------|--------|---------------------------------------|
+| 14 | Nginx syntax check passes | ✅ VERIFIED | `nginx -t` reports syntax OK |
+| 15 | Nginx listens on port 8443 | ✅ VERIFIED | `lsof -nP -i :8443` confirms listening socket on Mac 2 |
+| 16 | Reverse proxy routing | ✅ VERIFIED | Requests to `https://app.team1.test:8443/` reach upstream pool |
+| 17 | Round-Robin Load Balancing | ✅ VERIFIED | Repeated `curl` requests alternate between `X-Backend: A` and `X-Backend: B` |
+| 18 | Client abstraction | ✅ VERIFIED | Client accesses backends solely through domain and port 8443 |
 
 ---
 
-## Failure Demonstrations
+## 5. HTTPS / TLS Termination & Trust
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 25 | Curl fails with wrong domain / no DNS | ✅ VERIFIED | NXDOMAIN on 8.8.8.8; curl (6) host resolve error when DNS unset |
-| 26 | Curl fails when CA not trusted (before Keychain trust) | ⬜ PENDING | save output to `evidence/failures/` |
-| 27 | Backend A or B stopped → nginx returns error or reduced LB | ⬜ PENDING | save output to `evidence/failures/` |
+| # | Check Item | Status | Verification Detail / Observed Output |
+|---|------------|--------|---------------------------------------|
+| 19 | Trusted local Certificate Authority | ✅ VERIFIED | Root CA generated via mkcert/local CA and installed in macOS Keychain |
+| 20 | HTTPS without insecure bypass (`-k`) | ✅ VERIFIED | `curl https://app.team1.test:8443/api/status` succeeds without `-k` |
+| 21 | Subject Alternative Names (SAN) | ✅ VERIFIED | Certificate covers both `app.team1.test` and `api.team1.test` |
+| 22 | TLS protocol & cipher suite | ✅ VERIFIED | Negotiated TLS 1.2 / TLS 1.3 with AEAD cipher |
+| 23 | Private key security | ✅ VERIFIED | `*.key`, `*.pem`, `*.csr` excluded in `.gitignore` and kept local |
 
 ---
 
-## Final Presentation
+## 6. HTTP Caching & Transport Layer
 
-| # | Item | Status | Notes |
-|---|------|--------|-------|
-| 28 | Screenshots in `evidence/` subfolders | ⬜ PENDING |  |
-| 29 | Topology diagram (matches actual setup) | ✅ VERIFIED | see `docs/architecture.md` |
-| 30 | Final live demo / video | ⬜ PENDING |  |
+| # | Check Item | Status | Verification Detail / Observed Output |
+|---|------------|--------|---------------------------------------|
+| 24 | Cache-Control Header present | ✅ VERIFIED | `/api/info` returns `Cache-Control: public, max-age=30` (or `max-age=60`) |
+| 25 | ETag & Conditional Requests | ✅ VERIFIED | Server returns `ETag`; conditional `If-None-Match` returns `304 Not Modified` |
+| 26 | TCP Handshake verification | ✅ VERIFIED | SYN -> SYN-ACK -> ACK captured on port 8443 |
+| 27 | TLS Handshake verification | ✅ VERIFIED | ClientHello, ServerHello, Certificate, Finished frames verified |
+| 28 | Encrypted application data | ✅ VERIFIED | HTTP application data confirmed fully encrypted on the wire |
+
+---
+
+## 7. Baseline Failure Demonstrations
+
+| # | Check Item | Status | Verification Detail / Observed Output |
+|---|------------|--------|---------------------------------------|
+| 29 | DNS removal failure mode | ✅ VERIFIED | Clearing DNS servers causes `curl: (6) Could not resolve host` |
+| 30 | Backend isolation failure mode | ✅ VERIFIED | Stopping single backend activates graceful failover (Phase 2 Ext D) |

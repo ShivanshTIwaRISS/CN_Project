@@ -1,14 +1,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # dns/dnsmasq.conf.example
-# Phase 1 — Private Network Service Platform
+# Phase 1 / Phase 2 Baseline — Private Network Service Platform
 #
-# This is an example/template of the dnsmasq configuration used on Mac 1.
-# The live configuration may be placed at any of:
+# Primary DNS server configuration template for Mac 1 (Shivansh Tiwari).
+# The live configuration may be placed at:
 #   /opt/homebrew/etc/dnsmasq.conf   (Apple-Silicon Homebrew)
 #   /usr/local/etc/dnsmasq.conf      (Intel Homebrew)
 #
-# Copy this file, adjust the IPs if DHCP has changed, then restart dnsmasq:
-#   brew services restart dnsmasq
+# Restart dnsmasq:
+#   sudo brew services restart dnsmasq
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Listen on port 53 (standard DNS)
@@ -18,27 +18,30 @@ port=53
 # en0 is the typical Wi-Fi interface on macOS.
 interface=en0
 bind-interfaces
-listen-address=127.0.0.1,10.7.15.60
+listen-address=127.0.0.1,10.7.19.246
 
 # ── Private .test zone ────────────────────────────────────────────────────────
 # We use .test intentionally:
 #   • .test is reserved by RFC 2606 / RFC 6761 for testing — it will never
 #     collide with a real public TLD.
-#   • .local MUST NOT be used; macOS reserves .local for mDNS/Bonjour and
-#     the resolution will be broken.
+#   • .local MUST NOT be used; macOS reserves .local for mDNS/Bonjour.
 #
-# Both hostnames resolve to Mac 2 (nginx HTTPS reverse proxy), NOT directly
-# to the backend servers.
+# Both hostnames resolve to Mac 2 (nginx HTTPS reverse proxy: 10.7.18.254),
+# NOT directly to the backend servers.
 #
-# Current lab addresses (update if DHCP changes):
-#   10.7.21.116 = Mac 2 (nginx :8443)
-address=/app.teamX.test/10.7.21.116
-address=/api.teamX.test/10.7.21.116
+# Lab addresses:
+#   Mac 1 (DNS Primary / Standby Edge / Backend A): 10.7.19.246
+#   Mac 2 (DNS Backup / Active Edge / Backend B):    10.7.18.254
+address=/app.team1.test/10.7.18.254
+address=/api.team1.test/10.7.18.254
+
+# DNS TTL (Extension B default: 30 seconds)
+local-ttl=30
 
 # ── Upstream forwarders for all other domains ─────────────────────────────────
 server=1.1.1.1
 server=8.8.8.8
 
-# ── Logging (written to /tmp, not committed) ──────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 log-queries
 log-facility=/tmp/dnsmasq.log

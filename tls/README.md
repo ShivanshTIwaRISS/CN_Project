@@ -1,91 +1,91 @@
-# TLS — TeamX Local CA Architecture
+# TLS & Certificate Authority (CA) Architecture
 
 ## Overview
 
-This project uses a **local Certificate Authority (CA)** rather than a
-self-signed server certificate. This means the final `curl` tests run
-**without `-k`** — the certificate chain is fully trusted.
+This project implements transport-layer encryption using a **locally trusted Certificate Authority (CA)** (created via `mkcert` or OpenSSL).
+
+By trusting the local Root CA in the client operating system trust store (macOS Keychain), all `curl` and web browser requests connect securely **without using `-k` / `--insecure`**.
 
 ---
 
-## Certificate Hierarchy
+## Certificate Trust Hierarchy
 
 ```
-TeamX Local Root CA
-└── app.crt  (server certificate for app.teamX.test)
+Local Root CA (mkcert / Local CA)
+└── edge-cert.pem (Server certificate)
+    ├── Subject CN: app.team1.test
+    └── Subject Alternative Names (SAN):
+        ├── DNS:app.team1.test
+        └── DNS:api.team1.test
 ```
 
-| Item | Detail |
-|------|--------|
-| CA name | `TeamX Local Root CA` |
-| CA key | `teamX-rootCA.key` — **NEVER commit this** |
-| CA cert | `teamX-rootCA.crt` — public, may be shared |
-| Server cert | `app.crt` |
-| Server key | `app.key` — **NEVER commit this** |
-| Subject CN | `app.teamX.test` |
-| SAN | `DNS:app.teamX.test`, `DNS:api.teamX.test` |
-| nginx TLS port | **8443** (443 not used — non-privileged port) |
+### Security & Certificate Specification
+
+| Parameter | Value |
+|-----------|-------|
+| Root CA File | `certs/rootCA.pem` (Public certificate; may be shared) |
+| Root CA Private Key | `rootCA-key.pem` (**NEVER committed; strictly local**) |
+| Edge Certificate | `certs/edge-cert.pem` (Public server certificate) |
+| Edge Private Key | `certs/edge-key.pem` (**NEVER committed; strictly local**) |
+| Valid Domains (SAN) | `app.team1.test`, `api.team1.test` |
+| Edge Port | `8443` (Non-privileged TLS listener) |
+| Supported Protocols | TLSv1.2, TLSv1.3 |
 
 ---
 
-## Why a Local CA?
+## Why Use a Trusted Local CA Instead of Self-Signed Certificates?
 
-A directly self-signed server certificate would require `-k` on every `curl`
-call because curl cannot build a chain of trust. By creating a local root CA
-and trusting it on the client machine, curl sees a valid chain:
+A single self-signed certificate generates validation warnings in browsers and forces tools like `curl` to use `-k` (insecure mode), which disables certificate chain validation entirely.
 
-```
-client trust store
-  └── TeamX Local Root CA   (trusted by macOS Keychain / curl --cacert)
-        └── app.crt          (verified)
-```
+By establishing a local Root CA and importing it into the system trust store:
+1. The client validates the cryptographic signature of `edge-cert.pem`.
+2. The client confirms the hostname in the URL matches the certificate's Subject Alternative Names (SAN).
+3. The connection is authentic and protected against MITM attacks on the LAN.
+4. **No `-k` flag is needed in any demo command.**
 
 ---
 
-## TLS Handshake Flow (simplified)
+## Installation & Trust Setup
 
-```
-Client (Mac 2 curl)               nginx (Mac 2 :8443)
-─────────────────────────────────────────────────────
-ClientHello  ─────────────────────────────>
-                         <─────────────── ServerHello
-                         <─────────────── Certificate (app.crt)
-                         <─────────────── ServerHelloDone
-ClientKeyExchange ────────────────────────>
-ChangeCipherSpec ─────────────────────────>
-Finished ─────────────────────────────────>
-                         <─────────────── ChangeCipherSpec
-                         <─────────────── Finished
-──── Encrypted application data (HTTP/1.1) ──────────
-GET /api/status HTTP/1.1 ─────────────────>
-                         <─────────────── 200 OK + JSON
-```
+### Option A: Using `mkcert` (Recommended)
+
+1. Install `mkcert` on Mac 1 and Mac 2:
+   ```bash
+   brew install mkcert
+   brew install nss # optional, for Firefox
+   ```
+
+2. Install local CA into system trust store:
+   ```bash
+   mkcert -install
+   ```
+
+3. Generate certificate covering both project domains:
+   ```bash
+   mkcert -cert-file certs/edge-cert.pem -key-file certs/edge-key.pem app.team1.test api.team1.test
+   ```
+
+4. Distribute the Root CA certificate (`rootCA.pem`) to the other Mac and trust it:
+   ```bash
+   sudo security add-trusted-cert -d -r trustRoot \
+     -k /Library/Keychains/System.keychain certs/rootCA.pem
+   ```
 
 ---
 
-## Regeneration Commands (reference only)
-
-> **Do not run these unless regenerating certificates.**
-> The actual keys live on Mac 2 outside the repository.
-
-### 1 — Create the local Root CA
+### Option B: Using Standard OpenSSL (Alternative)
 
 ```bash
-# Generate CA private key (keep secret, never commit)
-openssl genrsa -out teamX-rootCA.key 2048
+# 1. Generate Root CA key and certificate
+openssl genrsa -out rootCA.key 2048
+openssl req -x509 -new -nodes -key rootCA.key -sha256 -days 3650 \
+  -subj "/CN=Team1 Local Root CA" -out rootCA.pem
 
-# Self-sign the CA certificate (10-year validity, lab use)
-openssl req -x509 -new -nodes \
-    -key teamX-rootCA.key \
-    -sha256 -days 3650 \
-    -subj "/CN=TeamX Local Root CA" \
-    -out teamX-rootCA.crt
-```
+# 2. Generate Server private key and CSR
+openssl genrsa -out edge-key.pem 2048
+openssl req -new -key edge-key.pem -subj "/CN=app.team1.test" -out edge.csr
 
-### 2 — Create the server certificate signed by the CA
-
-```bash
-# Create a SAN extension file
+# 3. Create SAN extension file
 cat > san.ext <<EOF
 [req]
 req_extensions = v3_req
@@ -94,75 +94,28 @@ distinguished_name = req_distinguished_name
 [v3_req]
 subjectAltName = @alt_names
 [alt_names]
-DNS.1 = app.teamX.test
-DNS.2 = api.teamX.test
+DNS.1 = app.team1.test
+DNS.2 = api.team1.test
 EOF
 
-# Generate server private key (keep secret, never commit)
-openssl genrsa -out app.key 2048
+# 4. Sign server certificate with Root CA
+openssl x509 -req -in edge.csr -CA rootCA.pem -CAkey rootCA.key -CAcreateserial \
+  -days 365 -sha256 -extfile san.ext -extensions v3_req -out edge-cert.pem
 
-# Create CSR
-openssl req -new \
-    -key app.key \
-    -subj "/CN=app.teamX.test" \
-    -out app.csr
-
-# Sign with the CA, embedding SANs
-openssl x509 -req \
-    -in app.csr \
-    -CA teamX-rootCA.crt \
-    -CAkey teamX-rootCA.key \
-    -CAcreateserial \
-    -days 365 \
-    -sha256 \
-    -extfile san.ext \
-    -extensions v3_req \
-    -out app.crt
-```
-
-### 3 — Verify the chain
-
-```bash
-openssl verify -CAfile teamX-rootCA.crt app.crt
-# Expected output:  app.crt: OK
-```
-
-### 4 — Inspect the certificate
-
-```bash
-openssl x509 -in app.crt -text -noout | grep -A4 "Subject\|SAN\|Issuer"
-```
-
-### 5 — Trust the CA on the client Mac
-
-```bash
-# Import into macOS Keychain (run once per machine)
+# 5. Trust Root CA on macOS
 sudo security add-trusted-cert -d -r trustRoot \
-    -k /Library/Keychains/System.keychain teamX-rootCA.crt
+  -k /Library/Keychains/System.keychain rootCA.pem
 ```
 
 ---
 
-## Files NOT in this repository
-
-| File | Reason |
-|------|--------|
-| `app.key` | Server private key — listed in `.gitignore` |
-| `teamX-rootCA.key` | CA private key — listed in `.gitignore` |
-| `app.csr` | Certificate signing request — listed in `.gitignore` |
-| `*.srl` | CA serial file — listed in `.gitignore` |
-
-The `app.crt` and `teamX-rootCA.crt` public certificates may be stored
-in the repo for reference, but are not required to be checked in.
-
----
-
-## Final verification (no `-k`)
+## Verification Commands
 
 ```bash
-# After trusting the CA in macOS Keychain:
-curl https://app.teamX.test:8443/api/status
-curl -I https://app.teamX.test:8443/api/status
-```
+# 1. Inspect Subject and SANs
+openssl x509 -in certs/edge-cert.pem -text -noout | grep -A2 "Subject Alternative Name"
 
-Expected: `HTTP/1.1 200 OK` with no certificate error.
+# 2. Test HTTPS without -k
+curl -v https://app.team1.test:8443/api/status
+```
+Expected: `SSL certificate verify ok.`

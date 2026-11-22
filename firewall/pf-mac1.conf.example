@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# firewall/pf-mac1.conf.example
+# Phase 2 Extension C — Service Isolation / macOS Packet Filter (PF) for Mac 1
+# Machine: Mac 1 (10.7.19.246) — Host for Backend A (port 3001)
+#
+# Policy:
+#   1. Allow incoming Backend A traffic ONLY from Mac 2 (Active Edge: 10.7.18.254)
+#   2. Allow loopback traffic on 127.0.0.1 (for local Standby Nginx)
+#   3. Block all other incoming connections to TCP port 3001
+#
+# Apply rule safely under a dedicated project anchor:
+#   sudo pfctl -a com.apple/cnproject -f firewall/pf-mac1.conf.example
+#   sudo pfctl -e
+#
+# Verify loaded rules:
+#   sudo pfctl -a com.apple/cnproject -sr
+#
+# Rollback / flush project anchor rules:
+#   sudo pfctl -a com.apple/cnproject -F all
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Allow local loopback communication for standby nginx on Mac 1
+pass in quick on lo0 proto tcp from any to 127.0.0.1 port = 3001 flags S/SA keep state
+
+# Allow inbound TCP traffic to Backend A (3001) strictly from Mac 2 Active Edge (10.7.18.254)
+pass in quick on en0 inet proto tcp from 10.7.18.254 to any port = 3001 flags S/SA keep state
+
+# Block all other incoming traffic to Backend A (port 3001) from any other LAN host
+block in quick on en0 inet proto tcp from any to any port = 3001

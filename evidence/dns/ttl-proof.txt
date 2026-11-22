@@ -1,0 +1,62 @@
+========== TTL DEMONSTRATION ==========
+dnsmasq: syntax check OK.
+dnsmasq: syntax check OK.
+========== 1. CACHE OLD IP ==========
+
+; <<>> DiG 9.10.6 <<>> @127.0.0.1 -p 5300 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.18.254
+========== 2. CHANGE AUTHORITATIVE DNS ==========
+dnsmasq: syntax check OK.
+NEW AUTHORITATIVE ANSWER:
+
+; <<>> DiG 9.10.6 <<>> @10.7.19.246 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.19.246
+OLD CACHED ANSWER:
+
+; <<>> DiG 9.10.6 <<>> @127.0.0.1 -p 5300 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		25	IN	A	10.7.18.254
+========== 3. WAIT FOR TTL EXPIRY ==========
+CACHED ANSWER AFTER TTL EXPIRY:
+
+; <<>> DiG 9.10.6 <<>> @127.0.0.1 -p 5300 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.19.246
+========== 4. MANUAL CACHE FLUSH ==========
+dnsmasq: syntax check OK.
+NEW AUTHORITATIVE ANSWER:
+
+; <<>> DiG 9.10.6 <<>> @10.7.19.246 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.18.254
+BEFORE MANUAL FLUSH:
+
+; <<>> DiG 9.10.6 <<>> @127.0.0.1 -p 5300 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		26	IN	A	10.7.19.246
+AFTER MANUAL FLUSH:
+
+; <<>> DiG 9.10.6 <<>> @127.0.0.1 -p 5300 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.18.254
+========== 5. FINAL DNS STATE ==========
+Restoring application to Mac 1...
+dnsmasq: syntax check OK.
+
+; <<>> DiG 9.10.6 <<>> @10.7.19.246 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.19.246
+========== TTL PROOF FINISHED ==========
+Evidence saved at: /Users/shivanshtiwari/cn-project/evidence/ttl-proof.txt
+Restoring final DNS configuration...
+dnsmasq: syntax check OK.

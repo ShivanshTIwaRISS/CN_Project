@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# dns/dnsmasq-backup.conf.example
+# Phase 2 — Backup DNS Server Configuration (Mac 2: 10.7.18.254)
+#
+# Deploy on Mac 2 (Nav Prabhat Singh):
+#   Apple Silicon: /opt/homebrew/etc/dnsmasq.conf
+#   Intel Mac:     /usr/local/etc/dnsmasq.conf
+#
+# Check syntax:
+#   dnsmasq --test -C dnsmasq-backup.conf.example
+#
+# Restart service:
+#   sudo brew services restart dnsmasq
+#   OR
+#   sudo kill -HUP $(pgrep dnsmasq)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Standard DNS port
+port=53
+
+# Interface binding — bind only to loopback and Mac 2 LAN IPv4 address
+listen-address=127.0.0.1,10.7.18.254
+bind-interfaces
+
+# Do not forward plain names or queries without dots
+domain-needed
+bogus-priv
+
+# Upstream forwarders for external domains
+no-resolv
+server=1.1.1.1
+server=8.8.8.8
+
+# ── Private .test zone mappings (Identical to Primary) ───────────────────────
+# NORMAL STATE:
+# Both app and api resolve to Mac 2 (Active Edge: 10.7.18.254)
+address=/app.team1.test/10.7.18.254
+address=/api.team1.test/10.7.18.254
+
+# EDGE MIGRATION STATE (Uncomment for Extension E cutover demo):
+# address=/app.team1.test/10.7.19.246
+# address=/api.team1.test/10.7.18.254
+
+# ── TTL & Caching Behavior (Extension B) ─────────────────────────────────────
+local-ttl=30
+cache-size=1000
+
+# ── Query Logging ────────────────────────────────────────────────────────────
+log-queries
+log-facility=/tmp/cn-dns-backup.log
+pid-file=/tmp/cn-dns-backup.pid

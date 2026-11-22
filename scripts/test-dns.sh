@@ -1,9 +1,23 @@
 #!/bin/zsh
 set -e
 
-echo "=== app.teamX.test ==="
-dig @10.7.15.60 app.teamX.test
+PRIMARY_DNS="${PRIMARY_DNS:-10.7.19.246}"
+BACKUP_DNS="${BACKUP_DNS:-10.7.18.254}"
 
+echo "=== Querying Primary DNS (${PRIMARY_DNS}:53) ==="
+echo "--- app.team1.test ---"
+dig "@${PRIMARY_DNS}" app.team1.test +noall +answer
+echo "--- api.team1.test ---"
+dig "@${PRIMARY_DNS}" api.team1.test +noall +answer
 echo
-echo "=== api.teamX.test ==="
-dig @10.7.15.60 api.teamX.test
+
+echo "=== Querying Backup DNS (${BACKUP_DNS}:53) ==="
+echo "--- app.team1.test ---"
+dig "@${BACKUP_DNS}" app.team1.test +noall +answer
+echo "--- api.team1.test ---"
+dig "@${BACKUP_DNS}" api.team1.test +noall +answer
+echo
+
+echo "=== Querying System Resolver (no @) ==="
+dig app.team1.test +noall +answer || true
+echo

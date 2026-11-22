@@ -1,0 +1,60 @@
+========== MAC 1 PHASE 2 AUDIT ==========
+IP:
+10.7.19.246
+========== PRIMARY DNS ==========
+
+; <<>> DiG 9.10.6 <<>> @10.7.19.246 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.19.246
+
+; <<>> DiG 9.10.6 <<>> @10.7.19.246 api.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+api.team1.test.		30	IN	A	10.7.18.254
+========== BACKUP DNS ==========
+
+; <<>> DiG 9.10.6 <<>> @10.7.18.254 app.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+app.team1.test.		30	IN	A	10.7.19.246
+
+; <<>> DiG 9.10.6 <<>> @10.7.18.254 api.team1.test +noall +answer
+; (1 server found)
+;; global options: +cmd
+api.team1.test.		30	IN	A	10.7.18.254
+========== DNS TTL CONFIGURATION ==========
+local-ttl=30
+========== CLIENT DNS CACHE ==========
+name: app.team1.test
+ip_address: 10.7.19.246
+
+========== BACKEND A ==========
+{"backend":"A","status":"healthy"}
+========== APPLY MAC 1 BACKEND FIREWALL ==========
+pfctl: Use of -f option, could result in flushing of rules
+present in the main ruleset added by the system at startup.
+See /etc/pf.conf for further details.
+
+pfctl: Use of -f option, could result in flushing of rules
+present in the main ruleset added by the system at startup.
+See /etc/pf.conf for further details.
+
+No ALTQ support in kernel
+ALTQ related functions disabled
+No ALTQ support in kernel
+ALTQ related functions disabled
+pass in quick on en0 inet proto tcp from 10.7.18.254 to any port = 3001 flags S/SA keep state
+block drop in quick on en0 inet proto tcp from any to any port = 3001
+========== STANDBY EDGE ==========
+{"backend":"A","status":"ok","hostname":"Shivanshs-MacBook-Pro-4.local","port":3001}
+========== ACTIVE EDGE ON MAC 2 ==========
+{"backend":"B","status":"ok","hostname":"Navprabhats-MacBook-Air.local","port":3002}
+========== DNS-BASED EDGE MIGRATION ==========
+{"backend":"A","status":"ok","hostname":"Shivanshs-MacBook-Pro-4.local","port":3001}
+========== DIRECT BACKEND B ACCESS TEST ==========
+PASS: Direct Backend B connection was blocked or unavailable.
+curl: (28) Failed to connect to 10.7.18.254 port 3002 after 3004 ms: Timeout was reached
+========== FINAL BACKEND A ==========
+{"backend":"A","status":"healthy"}
+========== MAC 1 AUDIT FINISHED ==========

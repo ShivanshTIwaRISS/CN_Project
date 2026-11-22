@@ -1,0 +1,27 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# firewall/pf-mac2.conf.example
+# Phase 2 Extension C — Service Isolation / macOS Packet Filter (PF) for Mac 2
+# Machine: Mac 2 (10.7.18.254) — Host for Backend B (port 3002) & Active Nginx
+#
+# Policy:
+#   1. Allow incoming Backend B traffic strictly on loopback (lo0 / 127.0.0.1:3002)
+#      so local Active Nginx can reverse-proxy to it.
+#   2. Block all incoming LAN connections to TCP port 3002 from external hosts
+#      (including Mac 1 and other LAN clients).
+#
+# Apply rule safely under a dedicated project anchor:
+#   sudo pfctl -a com.apple/cnproject -f firewall/pf-mac2.conf.example
+#   sudo pfctl -e
+#
+# Verify loaded rules:
+#   sudo pfctl -a com.apple/cnproject -sr
+#
+# Rollback / flush project anchor rules:
+#   sudo pfctl -a com.apple/cnproject -F all
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Allow local loopback communication between active Nginx reverse proxy and Backend B
+pass in quick on lo0 proto tcp from any to 127.0.0.1 port = 3002 flags S/SA keep state
+
+# Block direct access to Backend B (port 3002) from any external network interface (LAN)
+block in quick on en0 inet proto tcp from any to any port = 3002

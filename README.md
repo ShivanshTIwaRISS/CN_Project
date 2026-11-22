@@ -88,7 +88,7 @@ flowchart TB
     D2["Backup DNS · Mac 2\n10.7.18.254:53\ndnsmasq"]
     E["Active HTTPS edge · Mac 2\n10.7.18.254:8443\nnginx · TLS termination"]
     A["Backend A · Mac 1\n10.7.19.246:3001\nHTTP / Node.js"]
-    B["Backend B · Mac 2\n127.0.0.1:3002\nHTTP / Node.js"]
+    B["Backend B · Mac 2\n10.7.18.254:3002 (bind address 0.0.0.0)\nnginx connects via 127.0.0.1"]
     S["Existing standby/cutover nginx listener · Mac 1\n10.7.19.246:8443"]
 
     C -->|DNS query / answer · UDP or TCP 53| D1
@@ -114,10 +114,10 @@ Mac 1's port-8443 listener was already running during the controlled edge-migrat
 | `8443` | TCP/TLS | Mac 2 (`10.7.18.254`) | Active nginx | Client-facing HTTPS edge and load balancer |
 | `8443` | TCP/TLS | Mac 1 (`10.7.19.246`) | Existing nginx listener | Target used in controlled DNS edge-migration test |
 | `3001` | TCP/HTTP | Mac 1 (`10.7.19.246`) | Backend A | Remote HTTP upstream reached over the LAN |
-| `3002` | TCP/HTTP | Mac 2 (`127.0.0.1`) | Backend B | Nginx reaches this backend through loopback; PF restricts inbound Wi-Fi access |
+| `3002` | TCP/HTTP | Mac 2 (`10.7.18.254`) | Backend B | Node.js listens on `0.0.0.0:3002`; nginx connects through `127.0.0.1:3002`, while PF restricts inbound Wi-Fi access |
 | `5300` | UDP/TCP | Mac 1 (`127.0.0.1`) | Temporary caching resolver | Isolated TTL/cache experiment; forwards to primary DNS |
 
-**Backend B binding detail:** The Node.js process was configured to listen on `0.0.0.0:3002`, not exclusively on loopback. Nginx uses `127.0.0.1:3002` to reach it locally, while the Mac 2 PF rule blocks inbound Wi-Fi connections to port `3002`. Do not describe the process itself as loopback-bound.
+**Backend B binding detail:** The Node.js process listens on `0.0.0.0:3002` on Mac 2 (`10.7.18.254`). Nginx uses `127.0.0.1:3002` to reach it locally. The Mac 2 PF rule blocks inbound Wi-Fi connections to port `3002`; therefore, the service is not bound exclusively to loopback, even though the proxy uses the loopback address.
 
 ### DNS operational states
 
@@ -134,7 +134,21 @@ api.team1.test  -> 10.7.18.254  (Mac 2 active nginx edge)
 app.team1.test  -> 10.7.19.246  (Mac 1 existing nginx listener)
 ```
 
-The application record was deliberately changed during migration testing. Restore both DNS configurations to the selected active edge before the final demonstration.
+The application record was deliberately changed during migration testing. Restore both DNS configurations to the selected active edge before the final demonstration. For the normal baseline in this project, both servers should return `10.7.18.254` for both names. Verify the answers directly against **each** resolver:
+
+```bash
+dig @10.7.19.246 app.team1.test +short
+dig @10.7.18.254 app.team1.test +short
+
+dig @10.7.19.246 api.team1.test +short
+dig @10.7.18.254 api.team1.test +short
+```
+
+Expected normal-baseline answer for all four queries:
+
+```text
+10.7.18.254
+```
 
 ---
 
@@ -322,19 +336,23 @@ sudo networksetup -setdnsservers "Wi-Fi" empty
 
 The Phase 2 Node.js server is parameterised by `BACKEND_ID` and `PORT`.
 
+The recorded terminal runs used a `server.js` file in each machine's `~/cn-project` working directory. The repository layout documented above lists `node-backend/server.js`; check the actual committed location and use one consistent path in your local setup and launch scripts.
+
+**If the committed file is `node-backend/server.js`, run from the repository root:**
+
 **Mac 1 — Backend A:**
 
 ```bash
-./scripts/run-backend-a-node.sh
+BACKEND_ID=A PORT=3001 node node-backend/server.js
 ```
 
 **Mac 2 — Backend B:**
 
 ```bash
-./scripts/run-backend-b-node.sh
+BACKEND_ID=B PORT=3002 node node-backend/server.js
 ```
 
-If launching manually, use the actual committed path to `server.js`. The recorded terminal session launched `server.js` from the `~/cn-project` directory with `BACKEND_ID=A PORT=3001` on Mac 1 and `BACKEND_ID=B PORT=3002` on Mac 2.
+If your checkout instead keeps `server.js` at the project root (as in the recorded manual terminal runs), use `node server.js` from that directory. The `scripts/run-backend-a-node.sh` and `scripts/run-backend-b-node.sh` helpers may also be used if those exact files exist in your checkout; verify their paths before running them.
 
 Verify the health endpoints:
 
@@ -352,7 +370,7 @@ Backend A should identify itself as `A`; Backend B should identify itself as `B`
 
 The certificate used by nginx must include both `app.team1.test` and `api.team1.test` as Subject Alternative Names. The recorded setup used `mkcert` and TLS 1.2 at the nginx edge.
 
-Example certificate generation (run from a protected local working directory):
+Generate the local CA and edge certificate **once on Mac 2**, which hosts the active HTTPS edge. Do not generate a separate CA on Mac 1 and assume that it will trust Mac 2's certificate. Run from a protected local working directory:
 
 ```bash
 mkcert -install
@@ -361,7 +379,7 @@ mkcert -cert-file edge-cert.pem -key-file edge-key.pem \
 chmod 600 edge-key.pem
 ```
 
-Install/trust the corresponding mkcert root CA on every client that must verify the certificate. If the CA is distributed to Mac 1, transfer only `rootCA.pem`; **never transfer or commit `rootCA-key.pem`**. Verify certificate trust with `curl` without `-k`:
+Find the mkcert CA directory on Mac 2 with `mkcert -CAROOT`. Install the generated certificate/key in the nginx configuration on the edge. For Mac 1 (or any other client) to validate the edge certificate, transfer **only** the public `rootCA.pem` through a trusted channel and add it to that Mac's appropriate trust store (for example, using Keychain Access). **Never transfer or commit `rootCA-key.pem`.** Verify certificate trust with `curl` without `-k`:
 
 ```bash
 curl -v https://app.team1.test:8443/api/status
@@ -382,11 +400,29 @@ upstream backend_pool {
 
 The active server listens on `8443 ssl`, uses the certificate/key generated for the project names, and proxies requests to `http://backend_pool`.
 
-Validate the configuration before starting or reloading nginx:
+Validate the **same custom configuration file that the running instance uses** before starting or reloading nginx. The following paths match the local runtime files used in the recorded setup; adjust them if your files are stored elsewhere.
+
+**Mac 2 — active edge:**
 
 ```bash
-nginx -t
+NGINX="$(brew --prefix)/bin/nginx"
+
+"$NGINX" -t \
+  -p "$HOME/cn-project/" \
+  -c "$HOME/cn-project/nginx-active.conf"
 ```
+
+**Mac 1 — existing standby/cutover listener:**
+
+```bash
+NGINX="$(brew --prefix)/bin/nginx"
+
+"$NGINX" -t \
+  -p "$HOME/cn-project/" \
+  -c "$HOME/cn-project/nginx-standby.conf"
+```
+
+A plain `nginx -t` checks the default nginx configuration and may not validate the custom project configuration. Use the same `-p` and `-c` arguments that are used to launch or reload the project instance.
 
 Check whether a process already owns port `8443`:
 
